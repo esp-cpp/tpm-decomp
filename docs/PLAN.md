@@ -68,12 +68,21 @@ In tab5-emu (`components/tpm`, branch `feat/tpm`):
       cores), audio pull task, pause/save states, the address-test lessons
       (no hard-coded PSX/ESP32-S3 memory ranges)
 
-## Alternative worth keeping in mind: static recompilation
+## Running now: static recompilation (2026-10-11)
 
-A MIPS-to-C static recompiler (as N64Recomp does for N64 games) could turn the
-whole executable into C mechanically and run it on psyz long before the
-decompilation is finished, with decompiled functions replacing recompiled ones
-one at a time. A single fixed-address executable plus one code overlay
-(`FMV.CPE`) is a friendly shape for that; the hand-written asm with data in
-`.text` is the part that needs care. It is a different project (a recompiler + an HLE runtime), so it
-is noted here, not started.
+`tools/recomp.py` + `recomp/runtime` (see [recomp/README.md](../recomp/README.md))
+run the whole game: the executable is translated to C mechanically and the
+runtime is the PlayStation around it (BIOS calls, interrupts, DMA, CD-ROM,
+GPU ports on psyz's rasterizer, psyz's GTE and SPU). It boots into the first
+level on the desktop; the Tab5 build (tab5-emu `components/tpm`) is the same
+code. This changes the order of the work above: the port no longer waits for
+the decompilation, and decompiled C can replace recompiled functions one at
+a time (same entry address, same register conventions).
+
+Next for the recompiled game:
+
+- [ ] the Tab5: first run, then performance (rasterizer on the second core,
+      as the MGS port does)
+- [ ] MDEC (movies) and XA-ADPCM (speech and music streamed from the disc)
+- [ ] memory card (save files on the SD card)
+- [ ] root-counter interrupts, if anything uses them

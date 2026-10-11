@@ -1,0 +1,77 @@
+# recomp: the game as C, now
+
+The decompilation will take a long time. This directory gets the game
+running natively in the meantime: `tools/recomp.py` translates the whole
+executable (MIPS R3000A) into C, mechanically, and the runtime here is the
+PlayStation around it. Decompiled functions can replace recompiled ones one
+at a time later; the runtime stays.
+
+Nothing generated is committed: the C is derived from the game, so it is
+produced at build time from your own `SLUS_008.84` (and, for the movie
+player overlay, your disc image).
+
+## The recompiler (`tools/recomp.py`)
+
+- **Functions**: the split's entry points (`config/recomp_entries.us.txt`,
+  addresses only), the PSY-Q symbols, every `jal` target, and every return
+  point of a call to the BIOS `setjmp` stub (the kernel "longjmps" back there
+  on an interrupt). Code is what is *reachable* from those: tables and strings
+  that sit in `.text` stay data. Where code branches into the middle of a
+  neighbour (a mis-split, or hand-written asm sharing tails) the two become
+  one C function with several entry points.
+- **Instructions**: registers are C locals, written back to `g_cpu` around
+  calls and returns. Branch delay slots and the R3000's load delay slot are
+  honoured; `jr $ra` returns, other `jr`/`jalr` go through a switch over the
+  function's address-taken labels or the runtime's dispatcher. GTE
+  instructions call psyz's software GTE.
+- **Time**: every loop back-edge counts down a budget; at zero the runtime
+  advances its clock, runs the hardware (vblank, CD, SPU) and takes
+  interrupts there.
+- **Overlays**: with `--disc`, `FMV.CPE` (the movie player, loaded at
+  `0x80160000`) is pulled out of `FILE.000` through the game's own file table
+  and recompiled too.
+- **HLE**: `hle.us.txt` lists functions replaced by native code
+  (`runtime/rt_hle.c`): the BIOS patches, libmcrd (no memory card yet), the
+  movie trampoline (movies are skipped until MDEC is emulated; `RT_MOVIES=1`
+  runs them), and a wrapper on `PadInitDirect`.
+
+## The runtime (`runtime/`)
+
+| file | |
+|---|---|
+| `recomp_rt.h` | what generated code sees: `g_cpu`, memory accessors, `DIV`, hooks |
+| `rt_core.c` | dispatch, traps, COP0, interrupt delivery (`HookEntryInt` / `ReturnFromException`), the clock, boot |
+| `rt_bios.c` | the A0/B0/C0 calls: C library, heap, kernel events, printf |
+| `rt_hw.c` | I/O space: interrupt controller, DMA, root counters, SPU (psyz's register-level emulator), SIO/MDEC stand-ins |
+| `rt_gpu.c` | GP0/GP1 ports, VRAM transfers, display state, in front of psyz's software rasterizer |
+| `rt_cdrom.c` | the CD-ROM controller over a raw `.bin` (commands, INT1-5, data FIFO, XA audio sectors skipped) |
+| `rt_hle.c` | the native replacements, and the pad buffers filled every vblank |
+| `rt_platform.h` | what a platform provides (sectors, vblank, pads, audio, time, memory) and gets |
+
+The platforms: `host/main.c` (headless desktop runner) and tab5-emu's
+`components/tpm` (the M5Stack Tab5).
+
+## The desktop runner
+
+```sh
+git submodule update --init recomp/psyz
+make -C recomp DISC="<your disc>.bin"          # -> build/recomp/tpm-host
+build/recomp/tpm-host disks/us/SLUS_008.84 "<your disc>.bin" \
+    --frames 1800 --dump out/ --every 60 --wav out/audio.wav \
+    --press 300:cross --press 600:cross --press 900:start
+```
+
+It runs in emulated time (as fast as the host can, deterministic), writes
+the display as PNGs and the SPU's output as a WAV, and presses buttons on
+cue. The default build keeps a shadow call stack (`DEBUG=1`): fatal errors
+print the guest call chain, `RT_TRACE=1` logs CD / DMA / interrupt traffic,
+`RT_WATCH=<addr>` logs every store to one word.
+
+## Status
+
+Boots through the memory-card notice, the loading screens and the level
+intro into the first level (Trade Federation ship), in 3D. The SPU produces
+sound (measured, not yet listened to).
+
+Not yet: movies (MDEC), XA-ADPCM audio (speech / music streamed from the
+disc), memory cards, root-counter interrupts.

@@ -147,7 +147,7 @@ static void dump(uint32_t frame) {
         w = 1024; h = 512;
         rgb = malloc((size_t)w * h * 3);
         for (int i = 0; i < w * h; i++) {
-            uint16_t p = g_RawVram[i];
+            uint16_t p = g_rt_vram[i];
             rgb[3 * i] = (uint8_t)((p & 31) << 3);
             rgb[3 * i + 1] = (uint8_t)(((p >> 5) & 31) << 3);
             rgb[3 * i + 2] = (uint8_t)(((p >> 10) & 31) << 3);
@@ -158,14 +158,14 @@ static void dump(uint32_t frame) {
         for (int y = 0; y < h && d.enabled; y++) {
             int vy = (d.y + y) & 511;
             if (d.rgb24) {
-                const uint8_t* row = (const uint8_t*)&g_RawVram[vy * 1024];
+                const uint8_t* row = (const uint8_t*)&g_rt_vram[vy * 1024];
                 for (int x = 0; x < w; x++) {
                     int bx = (d.x * 2 + x * 3) % 2048;
                     memcpy(rgb + 3 * (y * w + x), row + bx, 3);
                 }
             } else {
                 for (int x = 0; x < w; x++) {
-                    uint16_t p = g_RawVram[vy * 1024 + ((d.x + x) & 1023)];
+                    uint16_t p = g_rt_vram[vy * 1024 + ((d.x + x) & 1023)];
                     uint8_t* o = rgb + 3 * (y * w + x);
                     o[0] = (uint8_t)((p & 31) << 3);
                     o[1] = (uint8_t)(((p >> 5) & 31) << 3);
@@ -187,6 +187,10 @@ void plat_vblank(void) {
     if ((int)f >= max_frames) {
         if (dump_dir) dump(f);
         if (wav) wav_header();
+#ifdef RT_DEBUG
+        extern int g_shadow_max;
+        printf("[host] deepest guest call chain: %d\n", g_shadow_max);
+#endif
         printf("[host] %d frames: done\n", max_frames);
         fflush(stdout);
         exit(0);

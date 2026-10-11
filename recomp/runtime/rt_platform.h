@@ -15,7 +15,7 @@ int plat_read_sector(uint32_t lba, uint8_t* out);
 uint32_t plat_disc_sectors(void);
 
 /* Called at every emulated vertical blank, on the game's thread: present the
- * display (rt_gpu_display / g_RawVram) and sample input. */
+ * display (rt_gpu_display / g_rt_vram) and sample input. */
 void plat_vblank(void);
 
 /* Pad buttons for port 0/1, PlayStation bit layout, 1 = pressed:
@@ -58,7 +58,7 @@ typedef struct {
     int enabled;
 } RtDisplay;
 void rt_gpu_display(RtDisplay* d);
-extern uint16_t g_RawVram[512 * 1024];
+extern uint16_t g_rt_vram[512 * 1024];
 
 uint32_t rt_frame_count(void);
 

@@ -154,12 +154,12 @@ void Psyz_GteCommand(unsigned int cmd);
  * and post-mortems. */
 #ifdef RT_DEBUG
 extern uint32_t g_shadow[256];
-extern int g_shadow_n;
+extern int g_shadow_n, g_shadow_max;
 static inline void rt_leave_(int* d) { g_shadow_n = *d; }
 #define RT_ENTER(a)                                                         \
     __attribute__((cleanup(rt_leave_))) int shadow_d_ = g_shadow_n;         \
     if (g_shadow_n < 256) g_shadow[g_shadow_n] = (a);                       \
-    g_shadow_n++
+    if (++g_shadow_n > g_shadow_max) g_shadow_max = g_shadow_n
 #else
 #define RT_ENTER(a) do { } while (0)
 #endif

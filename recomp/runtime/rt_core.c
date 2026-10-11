@@ -13,7 +13,7 @@ Cpu g_cpu;
 int g_trace;
 #ifdef RT_DEBUG
 uint32_t g_shadow[256];
-int g_shadow_n;
+int g_shadow_n, g_shadow_max;
 uint32_t g_watch = 0xFFFFFFFFu;
 void rt_watch_hit(uint32_t a, uint32_t v, int size) {
     printf("[watch] %08X <- %0*X (%d bytes) frame %u in %s\n", (unsigned)a, size * 2, (unsigned)v,

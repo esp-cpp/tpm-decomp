@@ -14,7 +14,12 @@ Two goals, in this order:
    [tab5-emu](https://github.com/esp-cpp/tab5-emu), the way its Metal Gear
    Solid port runs [mgs_reversing](https://github.com/FoxdieTeam/mgs_reversing).
 
-Status: the executable is split (splat) and rebuilds byte-identical from
+**The game runs** (natively, on the desktop and the Tab5) through a static
+recompilation of the whole executable: see [recomp/](recomp/README.md). The
+decompilation below continues alongside it; decompiled functions can replace
+recompiled ones one at a time.
+
+Decompilation status: the executable is split (splat) and rebuilds byte-identical from
 `INCLUDE_ASM` stubs; PSY-Q library functions are identified by signature; the
 disc's file system is understood. First C: `main` and the file layer
 (`File_Init` and its table rebasing), correct but a few instructions off
@@ -74,6 +79,8 @@ the asm of functions it does not see in an `INCLUDE_ASM` under
 | `tools/psyq_match.py` | find PSY-Q library objects by signature, write splat symbols |
 | `tools/gte_words.py` | post-split pass: GTE commands as raw `.word`s (their encodings are not all canonical) |
 | `tools/setup_toolchain.sh` | fetch / build the toolchain |
+| `tools/fdiff.py` | one function of the build against the original, instruction by instruction |
+| `tools/recomp.py` | the static recompiler (see [recomp/](recomp/README.md)) |
 
 ## License
 

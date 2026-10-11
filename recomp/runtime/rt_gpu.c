@@ -16,12 +16,12 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
-EXT_RAM_BSS_ATTR u16 g_RawVram[VRAM_H * VRAM_W];
+EXT_RAM_BSS_ATTR u16 g_rt_vram[VRAM_H * VRAM_W];
 #ifndef SOFT_RASTER_IRAM
 #define SOFT_RASTER_IRAM IRAM_ATTR
 #endif
 #else
-u16 g_RawVram[VRAM_H * VRAM_W];
+u16 g_rt_vram[VRAM_H * VRAM_W];
 #endif
 
 #define SOFT_RASTER_STANDALONE
@@ -30,7 +30,10 @@ u16 g_RawVram[VRAM_H * VRAM_W];
 #ifdef ESP_PLATFORM
 #define SOFT_RASTER_RECIP /* RV32: no 64-bit divide (GCC nested function) */
 #endif
+/* the core's ESP32 diagnostics name the MGS port's VRAM: point them at ours */
+#define g_RawVram g_rt_vram
 #include "platform/soft_raster.inc.c"
+#undef g_RawVram
 
 /* telemetry symbols the rasterizer core references */
 unsigned sotn_prim_cycles;
@@ -43,7 +46,7 @@ unsigned sotn_push_count;
 unsigned sotn_pkt_drops;
 
 void Draw_Reset(void) {
-    vram = g_RawVram;
+    vram = g_rt_vram;
     Draw_TiledInit();
     for (int c = 0; c < 2; c++) {
         SoftState* s = &st_c[c];

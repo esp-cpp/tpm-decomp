@@ -31,7 +31,8 @@ long SquareRoot12_impl(long a) { (void)a; return 0; }
 #include "libspu_private.h" /* psyz/decomp/src/libspu */
 static union SpuUnion spu_regs;
 union SpuUnion* _spu_RXX = &spu_regs;
-volatile unsigned psyz_spu_irq_raised, psyz_spu_irq_caught_up;
+#ifndef ESP_PLATFORM /* the desktop flavour of psyz_spu.c ticks root counters */
 void Psyz_RcntAdd(int frames) { (void)frames; }
+#endif
 /* CD-DA / XA audio into the SPU mix: none yet */
 size_t Psyz_CdPullSamples(short* out, size_t frames) { (void)out; (void)frames; return 0; }
