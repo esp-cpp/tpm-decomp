@@ -1,0 +1,32 @@
+# Functions the recompiler replaces with native code (recomp/runtime/rt_hle.c):
+# address, then the hle_ function that stands in for it.
+# libpad runs as is, except for its SIO interrupt handler (the BIOS chain
+# it registers is not emulated): the wrapper notes the receive buffers and
+# rt_hle.c fills them every vblank
+0x8006044C PadInitDirect wrap
+0x8006FE40 _patch_gte
+0x800713C8 _patch_card
+0x8007145C _patch_card2
+0x800714CC _copy_memcard_patch
+0x80067FB4 MemCardInit
+0x80067FE0 MemCardEnd
+0x80068000 MemCardStart
+0x80068050 MemCardStop
+0x80068090 MemCardExist
+0x800682CC MemCardAccept
+0x80068568 MemCardOpen
+0x800686F0 MemCardClose
+0x80068734 MemCardReadData
+0x80068928 MemCardWriteData
+0x80068B1C MemCardReadFile
+0x80068D3C MemCardWriteFile
+0x80068F5C MemCardGetDirentry
+0x800691BC MemCardCallback
+0x800691D0 MemCardSync
+0x800692EC MemCardCreateFile
+0x800694F4 MemCardDeleteFile
+0x800696B0 MemCardFormat
+0x8006973C MemCardUnformat
+# the movie player's trampoline (calls the FMV.CPE overlay): rt_hle.c can
+# skip movies until MDEC is emulated
+0x80083F00 CallOverlay

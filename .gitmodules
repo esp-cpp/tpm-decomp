@@ -1,3 +1,7 @@
 [submodule "tools/maspsx"]
 	path = tools/maspsx
 	url = https://github.com/mkst/maspsx.git
+[submodule "recomp/psyz"]
+	path = recomp/psyz
+	url = https://github.com/esp-cpp/psyz.git
+	branch = esp32p4
