@@ -25,7 +25,7 @@ CC1FLAGS   := -quiet -O2 -G0 -mcpu=3000 -w -funsigned-char -fpeephole -ffunction
               -fpcc-struct-return -fcommon -msoft-float
 
 ASFLAGS    := -EL -march=r3000 -mtune=r3000 -no-pad-sections -Iinclude -G0 -O1
-LDFLAGS    := -EL --no-check-sections -nostdlib -s
+LDFLAGS    := -EL --no-check-sections -nostdlib
 
 ASM_SRCS   := $(shell find asm/$(VERSION) -name '*.s' -not -path '*/nonmatchings/*' -not -path '*/matchings/*' 2>/dev/null)
 C_SRCS     := $(shell find src -name '*.c' 2>/dev/null)

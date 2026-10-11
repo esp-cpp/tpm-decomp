@@ -16,7 +16,9 @@ Two goals, in this order:
 
 Status: the executable is split (splat) and rebuilds byte-identical from
 `INCLUDE_ASM` stubs; PSY-Q library functions are identified by signature; the
-disc's file system is understood. No game function is decompiled yet. See
+disc's file system is understood. First C: `main` and the file layer
+(`File_Init` and its table rebasing), correct but a few instructions off
+matching, so they build under `NON_MATCHING` (the port build) only. See
 [docs/LAYOUT.md](docs/LAYOUT.md) for everything known about the image and the
 disc, and [docs/PLAN.md](docs/PLAN.md) for the road map.
 
@@ -52,7 +54,16 @@ tools/psyq_match.py disks/us/SLUS_008.84 /tmp/sigs --union --symbols config/symb
    `asm/us/nonmatchings/<file>/<func>.s`;
 2. replace it with C (m2c is a good first draft:
    `m2c asm/us/nonmatchings/game/func_XXXXXXXX.s`);
-3. `make`: it must still print `OK`.
+3. `make`: it must still print `OK`. `tools/fdiff.py <func>` shows the built
+   function against the original, instruction by instruction.
+4. if it will not match after reasonable effort, keep the C anyway, guarded:
+   `#ifndef NON_MATCHING` / `INCLUDE_ASM(...)` / `#else` / C / `#endif`.
+   The port builds with `NON_MATCHING`; correct C is what it needs.
+
+Renaming a function: add it to `config/symbols.us.txt`, rename its
+`INCLUDE_ASM` line in `src/`, then `rm -rf asm && make setup` (splat files
+the asm of functions it does not see in an `INCLUDE_ASM` under
+`asm/us/matchings/`).
 
 ## Tools
 

@@ -75,14 +75,31 @@ struct FileEntry { u8 msf[3]; u8 pad; u32 size; char name[16]; };
 (levels), 13 `.VRM` + 12 `.VRJ` (VRAM images), 11 `.MAP`, 44 `.RGB` (load
 screens), `TPAGE1.BTP`, `TITLE.VRM`, `FRONT.VRM`, `FMV.CPE`.
 
+At boot `File_Init` (`0x80011BF8`) turns the four archives' compiled-in disc
+sectors (`g_DiscFileSectors`: 23, 17225, 64868, 164678) into positions and
+rebases every table to absolute ones. **The game never reads the ISO9660
+directory at run time**: a port only has to serve absolute sector reads.
+
+| table | at | entries | archive |
+|---|---|---|---|
+| `g_FileTable` | `0x800715A0` | 107 x 24 B | FILE.000 |
+| `g_StreamTable` | `0x80071FA8` | 2624 x 8 B | FILE.001 |
+| `g_StreamTable002` | `0x800771A8` | 168 x 8 B | FILE.002 |
+| `g_MovieTable` | `0x800776E8` | 12 x 8 B | FILE.003 |
+
+`main` (`0x800236D8`): `__main`, hardware/library init (`InitGeom` among it),
+`File_Init`, display setup `func_8001164C(320, 240, 1, 1)`, three 0x1B800-byte
+buffers from `0x800BBCE4` into `D_80088A1C[3]`, then `func_80023CB0` and
+`func_800237BC` (the game loop, presumably).
+
 ### The stream table (`0x80071FA8`)
 
 ```c
 struct StreamEntry { u8 msf[3]; u8 pad; u32 length; };
 ```
 
-Several hundred short streams (voice / music cues), positions relative to
-their archive.
+2624 streams (voice / music / effect cues) in FILE.001, positions relative
+to the archive.
 
 ## Data formats (first look)
 

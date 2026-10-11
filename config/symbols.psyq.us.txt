@@ -267,3 +267,6 @@ StartCARD2 = 0x80071500; // type:func
 StopCARD2 = 0x80071510; // type:func
 // LIBCARD.LIB END.OBJ (PSY-Q 430)
 _ExitCard = 0x80071520; // type:func
+// LIBCD.LIB (not matched by signature; identified by use)
+CdIntToPos = 0x8006465C; // type:func
+CdPosToInt = 0x80064760; // type:func

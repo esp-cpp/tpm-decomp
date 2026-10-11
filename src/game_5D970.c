@@ -20,7 +20,7 @@ INCLUDE_ASM("asm/us/nonmatchings/game_5D970", func_8005DEE4);
 
 INCLUDE_ASM("asm/us/nonmatchings/game_5D970", __start);
 
-INCLUDE_ASM("asm/us/nonmatchings/game_5D970", func_8005E280);
+INCLUDE_ASM("asm/us/nonmatchings/game_5D970", __main);
 
 INCLUDE_ASM("asm/us/nonmatchings/game_5D970", func_8005F3C4);
 

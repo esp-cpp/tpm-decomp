@@ -10,3 +10,11 @@ g_StreamTable = 0x80071FA8; // type:StreamEntry
 D_80057734 = 0x80057734; // size:0x4
 D_8005B678 = 0x8005B678; // size:0x4
 D_8005C168 = 0x8005C168; // size:0x1808
+// file layer (src/game.c)
+File_RebaseFiles = 0x80011AF0; // type:func
+File_RebaseStreams = 0x80011B74; // type:func
+File_Init = 0x80011BF8; // type:func
+g_DiscFileSectors = 0x8007793C; // size:0x10
+g_StreamTable002 = 0x800771A8;
+g_MovieTable = 0x800776E8;
+__main = 0x8005E280; // type:func

@@ -1,4 +1,26 @@
 #include "common.h"
+#include "file.h"
+
+/* not yet named */
+void func_80060F58(void);
+void func_8001ED34(void);
+void func_80010204(void);
+void EnterCriticalSection(void);
+void ExitCriticalSection(void);
+void func_800616CC(int);
+void func_80061840(int);
+void InitGeom(void);
+void func_80067F14(void);
+void func_80067174(void);
+void func_80011ED4(void);
+void func_8001109C(void);
+void func_80011CA4(void);
+void func_800141A4(void);
+void func_80023CB0(void);
+void func_800237BC(void);
+extern u8* D_80088A1C[3];
+extern u8 D_800BBCE4[];
+void func_8001164C(int, int, int, int);
 
 INCLUDE_ASM("asm/us/nonmatchings/game", func_80010000);
 
@@ -42,11 +64,52 @@ INCLUDE_ASM("asm/us/nonmatchings/game", func_800118A4);
 
 INCLUDE_ASM("asm/us/nonmatchings/game", func_800119B8);
 
-INCLUDE_ASM("asm/us/nonmatchings/game", func_80011AF0);
+/* NON_MATCHING (File_RebaseFiles, File_RebaseStreams): the original
+ * zeroes the loop counter first in the prologue; GCC 2.8.1 schedules it after
+ * the argument copies. Same instructions otherwise. File_Init: one register
+ * ($v1 for the loop test where GCC picks $v0). */
+#ifndef NON_MATCHING
+INCLUDE_ASM("asm/us/nonmatchings/game", File_RebaseFiles);
+#else
+/* Rebase a FILE.000 table from archive-relative to absolute disc positions. */
+void File_RebaseFiles(u32 count, CdlLOC* base, FileEntry* table) {
+    u32 i;
 
-INCLUDE_ASM("asm/us/nonmatchings/game", func_80011B74);
+    for (i = 0; i < count; i++) {
+        CdIntToPos(CdPosToInt(base) + CdPosToInt(&table[i].pos), &table[i].pos);
+    }
+}
+#endif
 
-INCLUDE_ASM("asm/us/nonmatchings/game", func_80011BF8);
+#ifndef NON_MATCHING
+INCLUDE_ASM("asm/us/nonmatchings/game", File_RebaseStreams);
+#else
+void File_RebaseStreams(u32 count, CdlLOC* base, StreamEntry* table) {
+    u32 i;
+
+    for (i = 0; i < count; i++) {
+        CdIntToPos(CdPosToInt(base) + CdPosToInt(&table[i].pos), &table[i].pos);
+    }
+}
+#endif
+
+#ifndef NON_MATCHING
+INCLUDE_ASM("asm/us/nonmatchings/game", File_Init);
+#else
+void File_Init(void) {
+    CdlLOC base[NUM_DISC_FILES];
+    CdlFILE unused;
+    u32 i;
+
+    for (i = 0; i < NUM_DISC_FILES; i++) {
+        CdIntToPos(g_DiscFileSectors[i], &base[i]);
+    }
+    File_RebaseFiles(NUM_FILES, &base[0], g_FileTable);
+    File_RebaseStreams(NUM_STREAMS_001, &base[1], g_StreamTable);
+    File_RebaseStreams(NUM_STREAMS_002, &base[2], g_StreamTable002);
+    File_RebaseStreams(NUM_STREAMS_003, &base[3], g_MovieTable);
+}
+#endif
 
 INCLUDE_ASM("asm/us/nonmatchings/game", func_80011CA4);
 
@@ -581,7 +644,35 @@ void func_800236C8(void) {
 void func_800236D0(void) {
 }
 
+#ifndef NON_MATCHING
 INCLUDE_ASM("asm/us/nonmatchings/game", main);
+#else
+/* NON_MATCHING: one instruction: the original loads the 4th argument of
+ * func_8001164C as a fresh constant (li $a3, 1) where GCC 2.8.1 copies $a2. */
+void main(void) {
+    func_80060F58();
+    func_8001ED34();
+    func_80010204();
+    EnterCriticalSection();
+    func_800616CC(0);
+    func_80061840(0);
+    InitGeom();
+    func_80067F14();
+    func_80067174();
+    ExitCriticalSection();
+    File_Init();
+    func_80011ED4();
+    func_8001109C();
+    func_8001164C(320, 240, 1, 1);
+    func_80011CA4();
+    func_800141A4();
+    D_80088A1C[0] = D_800BBCE4;
+    D_80088A1C[1] = D_80088A1C[0] + 0x1B800;
+    D_80088A1C[2] = D_80088A1C[1] + 0x1B800;
+    func_80023CB0();
+    func_800237BC();
+}
+#endif
 
 INCLUDE_ASM("asm/us/nonmatchings/game", func_800237BC);
 
