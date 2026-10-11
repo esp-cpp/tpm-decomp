@@ -9,6 +9,7 @@ CC    ?= cc
 OPT   ?= -O2
 DEBUG ?= 1
 CFLAGS := $(OPT) -g -Iruntime -I$(BUILD)/gen -I$(PSYZ)/include -I$(PSYZ)/src \
+          -Ipsyz/decomp/src/libspu \
           -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable \
           -Wno-parentheses-equality -Wno-tautological-compare \
           $(if $(filter 1,$(DEBUG)),-DRT_DEBUG)

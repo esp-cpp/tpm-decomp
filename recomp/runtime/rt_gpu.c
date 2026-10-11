@@ -95,7 +95,7 @@ void gpu_reset(void) {
     xfer_in = xfer_out = 0;
     stat_draw = 0;
     disp_off = 1;
-    if (!xfer_buf) xfer_buf = (uint16_t*)malloc(VRAM_W * VRAM_H * 2);
+    if (!xfer_buf) xfer_buf = (uint16_t*)plat_alloc(VRAM_W * VRAM_H * 2 + 4);
 }
 
 void gpu_vblank(void) { field ^= 1; }

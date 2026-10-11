@@ -219,8 +219,19 @@ void rt_set_realtime(int on) {
     rt_epoch_us = plat_time_us() - (uint64_t)(g_now / 33.8688);
 }
 
+static volatile int exit_requested, pause_requested;
+static jmp_buf boot_jb;
+void rt_request_exit(void) { exit_requested = 1; }
+void rt_pause(int on) { pause_requested = on; }
+
 void rt_poll(void) {
     g_cpu.budget = POLL_EDGES;
+    if (exit_requested) longjmp(boot_jb, 1);
+    if (pause_requested) {
+        while (pause_requested && !exit_requested) plat_pause_wait();
+        if (exit_requested) longjmp(boot_jb, 1);
+        rt_set_realtime(realtime); /* the pause took no emulated time */
+    }
     if (realtime) {
         uint64_t t = (uint64_t)((plat_time_us() - rt_epoch_us) * 33.8688);
         g_now = t > g_now ? t : g_now + POLL_EDGES;
@@ -248,7 +259,14 @@ void rt_boot(const uint8_t* exe, uint32_t size) {
     memcpy(&t_size, exe + 0x1C, 4);
     memcpy(&s_addr, exe + 0x30, 4);
     memcpy(&s_size, exe + 0x34, 4);
-    if (!g_ram) g_ram = (uint8_t*)calloc(1, RAM_ALLOC);
+    if (!g_ram) g_ram = (uint8_t*)plat_alloc(RAM_ALLOC);
+    if (!g_ram) rt_fatal("no memory for guest RAM");
+    memset(g_ram, 0, RAM_ALLOC);
+    exit_requested = pause_requested = 0;
+    hook_buf = 0;
+    in_irq = 0;
+    g_now = 0;
+    cop0_sr = 0x00000401u;
     g_trace = getenv("RT_TRACE") != NULL;
 #ifdef RT_DEBUG
     if (getenv("RT_WATCH")) g_watch = (uint32_t)strtoul(getenv("RT_WATCH"), NULL, 16) & 0x1FFFFC;
@@ -265,6 +283,14 @@ void rt_boot(const uint8_t* exe, uint32_t size) {
     g_cpu.budget = POLL_EDGES;
     RT_LOG("boot: pc %08X gp %08X text %08X+%X", (unsigned)pc0, (unsigned)gp0,
            (unsigned)t_addr, (unsigned)t_size);
+    rt_set_realtime(realtime);
+    if (setjmp(boot_jb)) {
+        RT_LOG("exit");
+#ifdef RT_DEBUG
+        g_shadow_n = 0;
+#endif
+        return;
+    }
     rt_dispatch(pc0);
     rt_fatal("the executable returned");
 }

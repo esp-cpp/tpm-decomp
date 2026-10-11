@@ -34,6 +34,8 @@ int plat_read_sector(uint32_t lba, uint8_t* out) {
     return fread(out, 1, 2352, disc) == 2352 ? 0 : -1;
 }
 uint32_t plat_disc_sectors(void) { return disc_sectors; }
+void* plat_alloc(uint32_t size) { return calloc(1, size); }
+void plat_pause_wait(void) {}
 
 static FILE* wav;
 static uint32_t wav_frames;

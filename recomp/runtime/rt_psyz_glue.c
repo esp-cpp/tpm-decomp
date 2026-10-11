@@ -28,7 +28,7 @@ long SquareRoot12_impl(long a) { (void)a; return 0; }
 
 /* psyz_spu.c's links into the rest of psyz */
 #include <stddef.h>
-#include "../psyz/decomp/src/libspu/libspu_private.h"
+#include "libspu_private.h" /* psyz/decomp/src/libspu */
 static union SpuUnion spu_regs;
 union SpuUnion* _spu_RXX = &spu_regs;
 volatile unsigned psyz_spu_irq_raised, psyz_spu_irq_caught_up;

@@ -30,10 +30,23 @@ void plat_audio(const int16_t* samples, int frames);
  * itself in real time (rt_set_realtime(1)). */
 uint64_t plat_time_us(void);
 
+/* Large allocations (guest RAM, transfer buffers): PSRAM on the board. */
+void* plat_alloc(uint32_t size);
+
+/* Called on the game's thread while a pause is requested (rt_pause(1)):
+ * block until it is lifted. */
+void plat_pause_wait(void);
+
 /* ---- what the runtime offers the platform ---- */
 
-/* Load a PS-X EXE into guest RAM and run it. Does not return. */
+/* Load a PS-X EXE into guest RAM and run it. Returns only after
+ * rt_request_exit(). */
 void rt_boot(const uint8_t* exe, uint32_t size);
+/* Ask the game's thread to leave rt_boot at its next poll. */
+void rt_request_exit(void);
+/* Pause the game's thread at its next poll (it calls plat_pause_wait()), or
+ * let it go again; time does not advance while paused. */
+void rt_pause(int on);
 /* 1: emulated time follows the host clock (the board); 0: emulated time
  * advances with the work done (deterministic, as fast as the host can). */
 void rt_set_realtime(int on);
