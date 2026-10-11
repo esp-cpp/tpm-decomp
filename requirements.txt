@@ -1,0 +1,5 @@
+splat64[mips]>=0.50
+spimdisasm>=1.42
+rabbitizer
+pyyaml
+pycparser

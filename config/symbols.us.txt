@@ -1,0 +1,12 @@
+// Game symbols for SLUS_008.84 (USA Rev 1). Format: name = 0xADDR; // type:func
+// PSY-Q library symbols live in symbols.psyq.us.txt (tools/psyq_match.py).
+__start = 0x8005E210; // type:func
+main = 0x800236D8; // type:func
+// file table: 107 x {u8 msf[3], u8 pad, u32 size, char name[16]} into FILE.000
+g_FileTable = 0x800715A0; // type:FileEntry
+// stream table: {u8 msf[3], u8 pad, u32 length} into the streamed archives
+g_StreamTable = 0x80071FA8; // type:StreamEntry
+// data embedded in the hand-written asm in .text (textbin pieces)
+D_80057734 = 0x80057734; // size:0x4
+D_8005B678 = 0x8005B678; // size:0x4
+D_8005C168 = 0x8005C168; // size:0x1808

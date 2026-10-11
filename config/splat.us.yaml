@@ -1,0 +1,73 @@
+# Star Wars Episode I: The Phantom Menace (USA, Rev 1) -- SLUS_008.84
+# sha1 02f73ad2115f2fbb5bd1880615db0f9ac7b5055c
+#
+# Image layout (see docs/LAYOUT.md):
+#   0x80010000  .text   game C, then the PSY-Q 4.3 libraries (0x8006044C..)
+#   0x80071590  .data   game rodata/data (file table at 0x800715A0)
+#   0x800838E4  .text   hand-written GTE / ordering-table asm
+#   0x8008585C  .data   library rodata/data
+#   0x8008630C  .sbss (zeros, still in the file image) then .bss 0x80086800..0x800CBCBC
+#               (gp = 0x8008630C; the heap starts at the end of .bss)
+options:
+  platform: psx
+  basename: tpm
+  base_path: ..
+  build_path: build/us
+  target_path: disks/us/SLUS_008.84
+  asm_path: asm/us
+  asset_path: assets/us
+  src_path: src
+  ld_script_path: build/us/tpm.ld
+  compiler: GCC
+  symbol_addrs_path:
+    - config/symbols.us.txt
+    - config/symbols.psyq.us.txt
+  undefined_funcs_auto_path: build/us/undefined_funcs_auto.txt
+  undefined_syms_auto_path: build/us/undefined_syms_auto.txt
+  find_file_boundaries: yes
+  use_legacy_include_asm: no
+  asm_jtbl_label_macro: jlabel
+  disassemble_all: yes
+  gp_value: 0x8008630C
+  global_vram_start: 0x80010000
+  section_order: [".text", ".data", ".rodata", ".bss"]
+  ld_bss_is_noload: yes
+  ld_align_section_vram_end: no
+  ld_align_segment_vram_end: no
+sha1: 02f73ad2115f2fbb5bd1880615db0f9ac7b5055c
+segments:
+  - [0x0, header]
+  - name: main
+    type: code
+    start: 0x800
+    vram: 0x80010000
+    align: 4
+    subalign: 4
+    subsegments:
+      - [0x800, c, game]
+      # Hand-written asm modules inside .text keep data next to their code;
+      # spimdisasm frames these as instructions, so they are carved out raw.
+      - [0x47F34, textbin, D_80057734] # u32 = 1, read by func_80028EE0
+      - [0x47F38, c, game_57738]
+      - [0x4BE78, textbin, D_8005B678] # u32 0x12345678 marker
+      - [0x4BE7C, c, game_5B67C]
+      - [0x4C968, textbin, D_8005C168] # lookup tables (D_8005C568, D_8005CE6C inside)
+      - [0x4E170, c, game_5D970]
+      - [0x50C4C, asm, psyq] # first signature-matched object (PadInitDirect); unmatched libs may start earlier
+      - [0x61D90, data, game_data]
+  # The linker put a second .text after the game's data: hand-written GTE /
+  # ordering-table routines, then the libraries' .rdata/.data. A segment of its
+  # own keeps that order (splat groups sections per segment).
+  - name: tail
+    type: code
+    start: 0x740E4
+    vram: 0x800838E4
+    align: 4
+    subalign: 4
+    bss_size: 0x454BC # 0x80086800 .. 0x800CBCBC
+    subsegments:
+      - [0x740E4, asm, gte_asm]
+      - [0x7605C, data, psyq_data]
+      - [0x76B0C, data, sbss_image] # gp .. end of the file image: zeros, but in the file
+      - { start: 0x77000, type: bss, vram: 0x80086800, name: bss }
+  - [0x77000]

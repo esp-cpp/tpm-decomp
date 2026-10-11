@@ -1,0 +1,19 @@
+# generated
+/build/
+/asm/
+/assets/
+*.pyc
+__pycache__/
+.venv/
+
+# the game: never commit anything from the disc
+/disks/*/*
+!/disks/*/.gitkeep
+*.bin
+*.cue
+*.iso
+
+# toolchain (tools/setup_toolchain.sh)
+/tools/binutils/
+/tools/build/
+/tools/gcc-*-psx/
