@@ -75,6 +75,11 @@ the asm of functions it does not see in an `INCLUDE_ASM` under
 | `tools/gte_words.py` | post-split pass: GTE commands as raw `.word`s (their encodings are not all canonical) |
 | `tools/setup_toolchain.sh` | fetch / build the toolchain |
 
+## License
+
+MIT (see [LICENSE](LICENSE)) for the code in this repository. The game
+itself is not covered: it stays the property of its owners and is not here.
+
 ## Credits
 
 splat / spimdisasm / rabbitizer (decompals, ethteck, AngheloAlf), maspsx
