@@ -678,8 +678,9 @@ void rt_gpu_record(const char* path, uint32_t from, uint32_t frames) {
  * leaves is the recording's last frame. */
 /* 5: everything, through the per-row span dispatch (the old path) */
 void rt_gpu_bench_mode(int skip) {
-    psyz_tex_rows = skip != 5;
-    psyz_bench_skip = skip == 5 ? 0 : skip;
+    /* 6: everything, row loops but no pre-modulated palettes */
+    psyz_tex_rows = skip == 5 ? 0 : skip == 6 ? 2 : 1;
+    psyz_bench_skip = skip >= 5 ? 0 : skip;
 }
 uint32_t rt_gpu_bench(const uint32_t* rec, uint32_t words, int reps) {
     if (words < 2 + VRAM_W * VRAM_H / 2 || rec[0] != 0x47504D54u) return 0;
