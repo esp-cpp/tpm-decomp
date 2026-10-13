@@ -33,11 +33,17 @@ void mem_write_slow(uint32_t a, uint32_t v, int size);
 
 #if defined(__GNUC__)
 #define RT_LIKELY(x) __builtin_expect(!!(x), 1)
-/* (always_inline measured no faster on the board and doubled the code) */
+/* (always_inline on everything measured no faster on the board and doubled
+ * the code, back when every call also moved all 32 registers) */
 #define RT_INLINE static inline
+/* the plain loads and stores: GCC left them as calls in the large generated
+ * functions, and a call there spills the caller-saved registers that hold
+ * guest registers */
+#define RT_ACCESS static inline __attribute__((always_inline))
 #else
 #define RT_LIKELY(x) (x)
 #define RT_INLINE static inline
+#define RT_ACCESS static inline
 #endif
 /* Guest loads and stores are aligned (the R3000 traps otherwise; LWL/LWR
  * work byte-wise), so they are plain typed accesses: through memcpy an RV32
@@ -47,30 +53,30 @@ void mem_write_slow(uint32_t a, uint32_t v, int size);
 
 /* Where a guest address lands in g_ram, or -1 for I/O / unmapped. KUSEG,
  * KSEG0 and KSEG1 all see the same 2 MB (mirrored over 8 MB). */
-RT_INLINE int32_t ram_off(uint32_t a) {
+RT_ACCESS int32_t ram_off(uint32_t a) {
     uint32_t p = a & 0x1FFFFFFFu;
     if (RT_LIKELY(p < 0x00800000u)) return (int32_t)(p & (RAM_SIZE - 1));
     if ((p & 0xFFFFFC00u) == 0x1F800000u) return (int32_t)(SCRATCH_OFF + (p & 0x3FFu));
     return -1;
 }
 
-RT_INLINE uint32_t LW(uint32_t a) {
+RT_ACCESS uint32_t LW(uint32_t a) {
     int32_t o = ram_off(a);
     if (RT_LIKELY(o >= 0)) return RAM32(o);
     return mem_read_slow(a, 4);
 }
-RT_INLINE uint32_t LHU(uint32_t a) {
+RT_ACCESS uint32_t LHU(uint32_t a) {
     int32_t o = ram_off(a);
     if (RT_LIKELY(o >= 0)) return RAM16(o);
     return mem_read_slow(a, 2) & 0xFFFFu;
 }
-RT_INLINE uint32_t LH(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LHU(a); }
-RT_INLINE uint32_t LBU(uint32_t a) {
+RT_ACCESS uint32_t LH(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LHU(a); }
+RT_ACCESS uint32_t LBU(uint32_t a) {
     int32_t o = ram_off(a);
     if (RT_LIKELY(o >= 0)) return g_ram[o];
     return mem_read_slow(a, 1) & 0xFFu;
 }
-RT_INLINE uint32_t LB(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBU(a); }
+RT_ACCESS uint32_t LB(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBU(a); }
 
 #ifdef RT_DEBUG
 extern uint32_t g_watch; /* RT_WATCH=addr: log stores to that word */
@@ -80,19 +86,19 @@ void rt_watch_hit(uint32_t a, uint32_t v, int size);
 #define WATCH(a, v, n) do { } while (0)
 #endif
 
-RT_INLINE void SW(uint32_t a, uint32_t v) {
+RT_ACCESS void SW(uint32_t a, uint32_t v) {
     WATCH(a, v, 4);
     int32_t o = ram_off(a);
     if (RT_LIKELY(o >= 0)) { RAM32(o) = v; return; }
     mem_write_slow(a, v, 4);
 }
-RT_INLINE void SH(uint32_t a, uint32_t v) {
+RT_ACCESS void SH(uint32_t a, uint32_t v) {
     WATCH(a, v, 2);
     int32_t o = ram_off(a);
     if (RT_LIKELY(o >= 0)) { RAM16(o) = (uint16_t)v; return; }
     mem_write_slow(a, v & 0xFFFFu, 2);
 }
-RT_INLINE void SB(uint32_t a, uint32_t v) {
+RT_ACCESS void SB(uint32_t a, uint32_t v) {
     WATCH(a, v, 1);
     int32_t o = ram_off(a);
     if (RT_LIKELY(o >= 0)) { g_ram[o] = (uint8_t)v; return; }
