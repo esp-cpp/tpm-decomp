@@ -322,19 +322,19 @@ def op_c(i, dst=None):
     if o == "rfe":
         return "rt_rfe();"
     if o == "mfc2":
-        return "%s = Psyz_GteDataRead(%d);" % (rt, i.rd)
+        return "%s = GTE_DR(%d);" % (rt, i.rd)
     if o == "cfc2":
-        return "%s = Psyz_GteCtrlRead(%d);" % (rt, i.rd)
+        return "%s = GTE_CR(%d);" % (rt, i.rd)
     if o == "mtc2":
-        return "Psyz_GteDataWrite(%d, %s);" % (i.rd, R(i.rt))
+        return "GTE_DW(%d, %s);" % (i.rd, R(i.rt))
     if o == "ctc2":
-        return "Psyz_GteCtrlWrite(%d, %s);" % (i.rd, R(i.rt))
+        return "GTE_CW(%d, %s);" % (i.rd, R(i.rt))
     if o == "cop2":
-        return "Psyz_GteCommand(0x%07Xu);" % (i.w & 0x1FFFFFF)
+        return "GTE_CMD(0x%07Xu);" % (i.w & 0x1FFFFFF)
     if o == "lwc2":
-        return "Psyz_GteDataWrite(%d, LW(%s));" % (i.rt, addr(i))
+        return "GTE_DW(%d, LW(%s));" % (i.rt, addr(i))
     if o == "swc2":
-        return "SW(%s, Psyz_GteDataRead(%d));" % (addr(i), i.rt)
+        return "SW(%s, GTE_DR(%d));" % (addr(i), i.rt)
     raise ValueError("op_c: %s at %08X" % (o, i.pc))
 
 

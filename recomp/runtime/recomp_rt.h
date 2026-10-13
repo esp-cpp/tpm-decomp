@@ -151,12 +151,27 @@ RT_INLINE void DIVU(uint32_t rs, uint32_t rt, uint32_t* hi, uint32_t* lo) {
     else { *hi = rs % rt; *lo = rs / rt; }
 }
 
-/* psyz's software GTE (instruction level) */
-unsigned int Psyz_GteDataRead(unsigned idx);
-void Psyz_GteDataWrite(unsigned idx, unsigned int v);
-unsigned int Psyz_GteCtrlRead(unsigned idx);
-void Psyz_GteCtrlWrite(unsigned idx, unsigned int v);
-void Psyz_GteCommand(unsigned int cmd);
+/* The GTE (rt_gte.h): register moves inline, commands in rt_gte.c.
+ * RT_GTE_CHECK builds run psyz's GTE in lockstep and report differences. */
+#include "rt_gte.h"
+#ifdef RT_GTE_CHECK
+uint32_t rt_gtec_dr(unsigned idx);
+void rt_gtec_dw(unsigned idx, uint32_t v);
+uint32_t rt_gtec_cr(unsigned idx);
+void rt_gtec_cw(unsigned idx, uint32_t v);
+void rt_gtec_cmd(uint32_t cmd);
+#define GTE_DR(n) rt_gtec_dr(n)
+#define GTE_DW(n, v) rt_gtec_dw(n, v)
+#define GTE_CR(n) rt_gtec_cr(n)
+#define GTE_CW(n, v) rt_gtec_cw(n, v)
+#define GTE_CMD(c) rt_gtec_cmd(c)
+#else
+#define GTE_DR(n) rt_gte_read(n)
+#define GTE_DW(n, v) rt_gte_write(n, v)
+#define GTE_CR(n) rt_gte_cread(n)
+#define GTE_CW(n, v) rt_gte_cwrite(n, v)
+#define GTE_CMD(c) rt_gte_command(c)
+#endif
 
 /* RT_DEBUG builds keep a shadow call stack of guest functions, for traces
  * and post-mortems. */

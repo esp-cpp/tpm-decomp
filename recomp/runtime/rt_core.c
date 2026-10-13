@@ -383,6 +383,7 @@ void rt_boot(const uint8_t* exe, uint32_t size) {
     if (t_size > size - 0x800) t_size = size - 0x800;
     memcpy(g_ram + (t_addr & (RAM_SIZE - 1)), exe + 0x800, t_size);
     hw_reset();
+    rt_gte_reset();
     rt_bios_init();
     memset(&g_cpu, 0, sizeof g_cpu);
     g_cpu.r[28] = gp0;
