@@ -123,7 +123,7 @@ static inline int is_lead(void) { return soft_core() == lead_idx(); }
  * rendezvous, so they always agree on who owns a row. */
 static int nworkers;
 static int split = 120;
-static uint64_t busy_us[2];
+static uint64_t busy_us[2], wait_us[2];
 uint32_t g_rt_gpu_split, g_rt_gpu_barriers; /* telemetry */
 
 static void apply_band(Parser* p) {
@@ -137,9 +137,12 @@ static void apply_band(Parser* p) {
     else Draw_SetBand(s, VRAM_H - 1);
 }
 
+uint32_t g_bar_why[4]; /* debug: feedback, load, move/store, vblank */
 static volatile int bar_count;
 static volatile unsigned bar_gen;
-static void gpu_barrier(void) {
+static void barrier_(int counted);
+static void gpu_barrier(void) { barrier_(1); }
+static void barrier_(int counted) {
     if (nworkers != 2) return;
     const unsigned gen = __atomic_load_n(&bar_gen, __ATOMIC_ACQUIRE);
     if (__atomic_add_fetch(&bar_count, 1, __ATOMIC_ACQ_REL) == 2) {
@@ -156,6 +159,7 @@ static void gpu_barrier(void) {
             break;
         }
     }
+    if (counted) wait_us[soft_core()] += plat_time_us() - t0; /* not work */
 }
 
 void rt_gpu_display(RtDisplay* d) {
@@ -296,7 +300,7 @@ static void exec_packet_(Parser* p) {
         if (nworkers == 2 && (c & 4)) {
             /* polygons carry their texpage in the second texcoord word */
             uint32_t tp = c < 0x40 ? cmd[(c & 0x10) ? 5 : 4] >> 16 : p->tpage;
-            if (samples_draw_area(p, tp)) gpu_barrier();
+            if (samples_draw_area(p, tp)) { if (is_lead()) g_bar_why[0]++; gpu_barrier(); }
         }
         u_long pk[16];
         for (int i = 0; i < p->cmd_len; i++) pk[i] = cmd[i];
@@ -318,6 +322,7 @@ static void exec_packet_(Parser* p) {
         r.y = (short)((cmd[1] >> 16) & 0x1FF);
         r.w = (short)(cmd[3] & 0x3FF ? cmd[3] & 0x3FF : 0x400);
         r.h = (short)((cmd[3] >> 16) & 0x1FF ? (cmd[3] >> 16) & 0x1FF : 0x200);
+        if (is_lead()) g_bar_why[2]++;
         gpu_barrier();
         if (is_lead()) Draw_MoveImage(&r, cmd[2] & 0x3FF, (cmd[2] >> 16) & 0x1FF);
         gpu_barrier();
@@ -395,6 +400,7 @@ static void gp0_exec(Parser* p, uint32_t w) {
             /* one worker writes it, and nobody draws past it before then:
              * it may be a texture the other band's next primitive reads, or
              * a picture the other worker is about to draw over */
+            if (lead) g_bar_why[1]++;
             gpu_barrier();
             if (lead) {
                 uint64_t t0 = timing_packets ? plat_time_us() : 0;
@@ -543,12 +549,19 @@ static void gpu_drain(void) {
 /* the vblank marker: both workers have drawn everything before it; the lead
  * moves the split and presents while the other waits */
 static void vblank_marker(uint32_t kind, uint32_t v) {
-    gpu_barrier();
+    if (is_lead()) {
+        g_bar_why[3]++;
+        if (getenv("RT_BARLOG") && g_bar_why[3] % 60 == 0)
+            printf("[gpu] barriers: feedback %u load %u move %u vblank %u\n", g_bar_why[0], g_bar_why[1], g_bar_why[2], g_bar_why[3]);
+    }
+    barrier_(0); /* (the vblank's waits are outside the busy spells) */
     if (is_lead()) {
         if (nworkers == 2) {
-            if (busy_us[1] > busy_us[0] + 1000 && split > 16) split -= 4;
-            else if (busy_us[0] > busy_us[1] + 1000 && split < 232) split += 4;
-            busy_us[0] = busy_us[1] = 0;
+            const int64_t w1 = (int64_t)busy_us[1] - (int64_t)wait_us[1];
+            const int64_t w0 = (int64_t)busy_us[0] - (int64_t)wait_us[0];
+            if (w1 > w0 + 1000 && split > 16) split -= 4;
+            else if (w0 > w1 + 1000 && split < 232) split += 4;
+            busy_us[0] = busy_us[1] = wait_us[0] = wait_us[1] = 0;
             g_rt_gpu_split = (uint32_t)split;
         }
         RtDisplay d;
@@ -562,7 +575,7 @@ static void vblank_marker(uint32_t kind, uint32_t v) {
         d.lines = (int)((kind >> 20) & 0x3FF);
         plat_display_ready(&d);
     }
-    gpu_barrier();
+    barrier_(0);
     apply_band(me()); /* the split may have moved */
 }
 
