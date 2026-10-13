@@ -14,14 +14,11 @@
 #include "rt_internal.h"
 #include "rt_platform.h"
 
-#ifdef ESP_PLATFORM
-#include "esp_attr.h"
-EXT_RAM_BSS_ATTR u16 g_rt_vram[VRAM_H * VRAM_W];
+/* VRAM (1 MB) comes from plat_alloc at boot, like the rest of the big
+ * buffers: the board hands its memory to one game at a time. */
+u16* g_rt_vram;
 #ifndef SOFT_RASTER_IRAM
-#define SOFT_RASTER_IRAM IRAM_ATTR
-#endif
-#else
-u16 g_rt_vram[VRAM_H * VRAM_W];
+#define SOFT_RASTER_IRAM /* internal RAM is the board's scarce memory */
 #endif
 
 #define SOFT_RASTER_STANDALONE
@@ -30,10 +27,8 @@ u16 g_rt_vram[VRAM_H * VRAM_W];
 #ifdef ESP_PLATFORM
 #define SOFT_RASTER_RECIP /* RV32: no 64-bit divide (GCC nested function) */
 #endif
-/* the core's ESP32 diagnostics name the MGS port's VRAM (a pointer there):
- * point them at ours */
-u16* rt_vram_ptr = g_rt_vram;
-#define g_RawVram rt_vram_ptr
+/* the core's ESP32 diagnostics name the MGS port's VRAM: point them at ours */
+#define g_RawVram g_rt_vram
 #include "platform/soft_raster.inc.c"
 #undef g_RawVram
 
@@ -101,6 +96,23 @@ void gpu_reset(void) {
     stat_draw = 0;
     disp_off = 1;
     if (!xfer_buf) xfer_buf = (uint16_t*)plat_alloc(VRAM_W * VRAM_H * 2 + 4);
+    if (!xfer_buf) rt_fatal("no memory for VRAM transfers");
+}
+
+int gpu_alloc(void) {
+    if (!g_rt_vram) g_rt_vram = (u16*)plat_alloc(VRAM_W * VRAM_H * 2);
+    return g_rt_vram != NULL;
+}
+
+void gpu_free(void) {
+#ifdef ESP_PLATFORM
+    Draw_FreeCaches();
+#endif
+    plat_free(xfer_buf);
+    plat_free(g_rt_vram);
+    xfer_buf = NULL;
+    g_rt_vram = NULL;
+    vram = NULL;
 }
 
 void gpu_vblank(void) { field ^= 1; }

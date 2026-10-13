@@ -249,6 +249,12 @@ void rt_idle(uint32_t cycles) {
 }
 
 /* ---- boot ---- */
+void rt_shutdown(void) {
+    hw_free();
+    plat_free(g_ram);
+    g_ram = NULL;
+}
+
 void rt_boot(const uint8_t* exe, uint32_t size) {
     if (size < 0x800 || memcmp(exe, "PS-X EXE", 8))
         rt_fatal("not a PS-X EXE");
@@ -260,7 +266,7 @@ void rt_boot(const uint8_t* exe, uint32_t size) {
     memcpy(&s_addr, exe + 0x30, 4);
     memcpy(&s_size, exe + 0x34, 4);
     if (!g_ram) g_ram = (uint8_t*)plat_alloc(RAM_ALLOC);
-    if (!g_ram) rt_fatal("no memory for guest RAM");
+    if (!g_ram || !gpu_alloc()) rt_fatal("no memory for guest RAM / VRAM");
     memset(g_ram, 0, RAM_ALLOC);
     exit_requested = pause_requested = 0;
     hook_buf = 0;

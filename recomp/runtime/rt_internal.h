@@ -26,6 +26,7 @@ void rt_bios(uint32_t table, uint32_t fn);
 
 /* rt_hw.c: interrupt controller, DMA, timers, SPU/SIO/MDEC stand-ins */
 void hw_reset(void);
+void hw_free(void);
 void hw_update(void);
 uint32_t hw_istat(void);
 uint32_t hw_imask(void);
@@ -35,6 +36,8 @@ enum { IRQ_VBLANK = 0, IRQ_GPU = 1, IRQ_CDROM = 2, IRQ_DMA = 3, IRQ_TMR0 = 4,
 
 /* rt_gpu.c */
 void gpu_reset(void);
+int gpu_alloc(void);
+void gpu_free(void);
 void gpu_gp0(uint32_t w);
 void gpu_gp1(uint32_t w);
 uint32_t gpu_read(void);

@@ -30,8 +30,10 @@ void plat_audio(const int16_t* samples, int frames);
  * itself in real time (rt_set_realtime(1)). */
 uint64_t plat_time_us(void);
 
-/* Large allocations (guest RAM, transfer buffers): PSRAM on the board. */
+/* Large allocations (guest RAM, VRAM, SPU, transfer buffers), zeroed:
+ * PSRAM on the board. Released with plat_free by rt_shutdown(). */
 void* plat_alloc(uint32_t size);
+void plat_free(void* p);
 
 /* Called on the game's thread while a pause is requested (rt_pause(1)):
  * block until it is lifted. */
@@ -42,6 +44,8 @@ void plat_pause_wait(void);
 /* Load a PS-X EXE into guest RAM and run it. Returns only after
  * rt_request_exit(). */
 void rt_boot(const uint8_t* exe, uint32_t size);
+/* After rt_boot returned: release everything the runtime allocated. */
+void rt_shutdown(void);
 /* Ask the game's thread to leave rt_boot at its next poll. */
 void rt_request_exit(void);
 /* Pause the game's thread at its next poll (it calls plat_pause_wait()), or
@@ -58,7 +62,7 @@ typedef struct {
     int enabled;
 } RtDisplay;
 void rt_gpu_display(RtDisplay* d);
-extern uint16_t g_rt_vram[512 * 1024];
+extern uint16_t* g_rt_vram; /* 1024 x 512, allocated by rt_boot */
 
 uint32_t rt_frame_count(void);
 

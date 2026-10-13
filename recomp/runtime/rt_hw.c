@@ -11,6 +11,11 @@
 
 /* psyz's register-level SPU (psyz_spu.c) */
 void Psyz_SpuInit(void);
+#ifdef ESP_PLATFORM
+void Psyz_SpuBind(void* p);
+size_t Psyz_SpuStateSize(void);
+static void* spu_state;
+#endif
 void Psyz_SpuReset(int hot);
 void Psyz_SpuWrite(unsigned int reg_offset, unsigned short value);
 unsigned short Psyz_SpuRead(unsigned int reg_offset);
@@ -298,11 +303,27 @@ void mem_write_slow(uint32_t a, uint32_t v, int size) {
 }
 
 /* ---- the scheduler ---- */
+void hw_free(void) {
+#ifdef ESP_PLATFORM
+    Psyz_SpuBind(NULL);
+    plat_free(spu_state);
+    spu_state = NULL;
+#endif
+    gpu_free();
+}
+
 void hw_reset(void) {
     i_stat = i_mask = 0;
     memset(dma_chcr, 0, sizeof dma_chcr);
     memset(rc, 0, sizeof rc);
     next_vblank = g_now + VBLANK_CYC;
+#ifdef ESP_PLATFORM
+    if (!spu_state) {
+        spu_state = plat_alloc((uint32_t)Psyz_SpuStateSize());
+        if (!spu_state) rt_fatal("no memory for the SPU");
+        Psyz_SpuBind(spu_state);
+    }
+#endif
     Psyz_SpuInit();
     Psyz_SpuReset(0);
     spu_frames = g_now * SPU_HZ / CPU_HZ;

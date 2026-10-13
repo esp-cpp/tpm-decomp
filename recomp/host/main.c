@@ -35,6 +35,7 @@ int plat_read_sector(uint32_t lba, uint8_t* out) {
 }
 uint32_t plat_disc_sectors(void) { return disc_sectors; }
 void* plat_alloc(uint32_t size) { return calloc(1, size); }
+void plat_free(void* p) { free(p); }
 void plat_pause_wait(void) {}
 
 static FILE* wav;
@@ -246,5 +247,6 @@ int main(int argc, char** argv) {
     disc_sectors = (uint32_t)(ftell(disc) / 2352);
     setvbuf(stdout, NULL, _IOLBF, 0);
     rt_boot(exe, (uint32_t)n);
+    rt_shutdown();
     return 0;
 }
