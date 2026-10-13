@@ -110,10 +110,7 @@ void rt_jump_ra(uint32_t t, uint32_t pc) {
     jump_unexpected("jr $ra", t, pc);
     rt_jump(t, pc);
 }
-void rt_jump_tbl(uint32_t t, uint32_t pc) {
-    jump_unexpected("jump table", t, pc);
-    rt_jump(t, pc);
-}
+
 
 /* Calls through pointers: the analysis passes the registers any
  * address-taken function may read. A target it did not see is a function
@@ -136,6 +133,12 @@ static void check_indirect(uint32_t t) {
 void rt_dispatch_ind(uint32_t t) {
     check_indirect(t);
     rt_dispatch(t);
+}
+/* (a jump table may also hold other functions: the analysis passes those
+ * the registers of a call through a pointer) */
+void rt_jump_tbl(uint32_t t, uint32_t pc) {
+    check_indirect(t);
+    rt_jump(t, pc);
 }
 void rt_jump_ind(uint32_t t, uint32_t pc) {
     check_indirect(t);

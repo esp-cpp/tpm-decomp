@@ -13,6 +13,10 @@ typedef struct {
     int w, h;    /* pixels */
     int rgb24;   /* 24-bit display mode */
     int enabled;
+    /* GP1 07, the vertical display range: the picture (VRAM rows y ..
+     * y + lines - 1) starts `top` lines down the h-line screen, the rest of
+     * the screen is black (letterboxed cutscenes shrink it) */
+    int top, lines;
 } RtDisplay;
 
 /* One raw 2352-byte sector of the disc (LBA 0 = 00:02:00). Returns 0 on
@@ -28,10 +32,12 @@ void plat_vblank(void);
  * from g_rt_vram. On the game's thread, or on the GPU worker's with
  * rt_gpu_set_async(1). */
 void plat_display_ready(const RtDisplay* d);
-/* rt_gpu_set_async(1) only: wake the GPU worker / wait a little (the worker
- * when idle, the game's thread when the queue is full or draining). */
+/* rt_gpu_set_async(n > 0) only: wake the GPU workers / wait a little (a
+ * worker when idle, the game's thread when the queue is full or draining);
+ * a worker that made room wakes the waiting game's thread. */
 void plat_gpu_kick(void);
 void plat_gpu_idle(void);
+void plat_gpu_wake_producer(void);
 
 /* Pad buttons for port 0/1, PlayStation bit layout, 1 = pressed:
  * 0 select, 3 start, 4 up, 5 right, 6 down, 7 left, 8 L2, 9 R2, 10 L1,
@@ -74,10 +80,15 @@ void rt_pause(int on);
  * the host can; 1: no faster than real time (the board), slower when the
  * host cannot keep up. */
 void rt_set_realtime(int on);
-/* Before rt_boot: run the GPU's command stream on another thread, which the
- * platform gives to rt_gpu_worker(&stop) (returns once *stop is set). */
-void rt_gpu_set_async(int on);
+/* Before rt_boot: run the GPU's command stream on n other threads (1 or 2),
+ * which the platform gives to rt_gpu_worker_n(&stop, idx) (returns once
+ * *stop is set): idx 1 always, idx 0 too with two workers, which then draw
+ * a band of rows each. On the board, worker idx must run on core idx.
+ * rt_gpu_worker(&stop) is rt_gpu_worker_n(&stop, 1). */
+void rt_gpu_set_async(int n);
+void rt_gpu_worker_n(volatile int* stop, int idx);
 void rt_gpu_worker(volatile int* stop);
+extern uint32_t g_rt_gpu_split, g_rt_gpu_barriers; /* two workers: telemetry */
 
 void rt_gpu_display(RtDisplay* d);
 extern uint16_t* g_rt_vram; /* 1024 x 512, allocated by rt_boot */

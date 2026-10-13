@@ -23,7 +23,12 @@ u16* g_rt_vram;
 
 #define SOFT_RASTER_STANDALONE
 #define SOFT_RASTER_NO_FALLBACK
-#define SOFT_CLUT_CACHE
+#ifdef ESP_PLATFORM
+#define SOFT_CLUT_CACHE /* per core there; the desktop's would be shared */
+#else
+#define SOFT_RASTER_HOST_CORES /* two workers on threads: per-thread state */
+__thread int psyz_host_core;
+#endif
 #ifdef ESP_PLATFORM
 #define SOFT_RASTER_RECIP      /* RV32: no 64-bit divide (GCC nested function) */
 #define SOFT_RASTER_FLOAT_GRAD /* ...and the P4 has an FPU: gradients in float
@@ -35,8 +40,8 @@ u16* g_rt_vram;
 #undef g_RawVram
 
 #ifdef ESP_PLATFORM
-/* One rasterizer worker here: nothing to wait for before a primitive that
- * samples the frame buffer (MGS's two workers rendezvous in libgpu.c) */
+/* psyz's own frame-buffer feedback test is the MGS port's (its frame buffer
+ * layout): this file makes its own, below */
 void Psyz_GpuBarrier(void) {}
 #endif
 
@@ -69,29 +74,89 @@ void Draw_Reset(void) {
     }
 }
 
-/* ---- state ---- */
+
+/* ---- state ----
+ * The GP0 stream is parsed where it is executed. With two workers (see
+ * rt_gpu_set_async) both parse and execute the whole stream, each drawing
+ * only its band of rows; everything below that is per worker lives in a
+ * Parser, indexed like the rasterizer's own per-core state (soft_core()). */
 static void gpu_drain(void);
 #define RING_ENTRIES (1u << 16)
-static uint32_t* ring;          /* the async queue: [kind, value] pairs */
-static uint32_t ring_w, ring_r; /* entries; producer / consumer owned */
-static int async_on;
-static uint32_t cmd[16];
-static int cmd_len, cmd_need;
-static int poly_line; /* receiving a polyline: vertices until 0x5xxx5xxx */
-static uint32_t pl_color, pl_prev_color, pl_prev_xy;
-static int pl_have_prev, pl_expect_color, pl_gouraud;
+static uint32_t* ring;             /* the async queue: [kind, value] pairs */
+static uint32_t ring_w, ring_r[2]; /* entries; producer / each worker */
+static int async_on;               /* 0: drawing on the CPU's thread; 1, 2 workers */
+static volatile int prod_wait;     /* the CPU's thread waits for ring space */
 
-/* CPU -> VRAM (A0) and VRAM -> CPU (C0) */
+typedef struct {
+    uint32_t cmd[16];
+    int cmd_len, cmd_need;
+    int poly_line; /* receiving a polyline: vertices until 0x5xxx5xxx */
+    uint32_t pl_color, pl_prev_color, pl_prev_xy;
+    int pl_have_prev, pl_expect_color, pl_gouraud;
+    /* CPU -> VRAM (A0) and VRAM -> CPU (C0); only the lead worker keeps
+     * the data, the other counts the words */
+    RECT xfer_rect;
+    uint32_t xfer_words, xfer_pos;
+    int xfer_in, xfer_out;
+    uint32_t gpuread_latch;
+    uint32_t stat_draw; /* GPUSTAT bits 0-10 from E1 + mask bits */
+    uint32_t e2, e3, e4, e5;
+    int ax0, ay0, ax1, ay1; /* the draw area */
+    uint32_t tpage;         /* E1 */
+} Parser;
+static Parser P[2];
 static uint16_t* xfer_buf;
-static RECT xfer_rect;
-static uint32_t xfer_words, xfer_pos;
-static int xfer_in, xfer_out;
-
-static uint32_t gpuread_latch;
-static uint32_t stat_draw; /* GPUSTAT bits 0-10 from E1 + mask bits */
-static uint32_t e2, e3, e4, e5;
 static uint32_t dma_dir;
 static int disp_off = 1, disp_x, disp_y, disp_mode, field;
+static int disp_y1 = 16, disp_y2 = 256; /* GP1 07, scanlines (NTSC: 16..256) */
+
+/* the worker that does what only one may (VRAM moves and transfers, the
+ * display), and whose parser the CPU's thread reads back */
+static inline int lead_idx(void) { return async_on ? 1 : 0; }
+static inline Parser* me(void) { return &P[soft_core()]; }
+static inline int is_lead(void) { return soft_core() == lead_idx(); }
+
+/* ---- two workers: bands and rendezvous ----
+ * Worker 1 draws the top `split` rows of the draw area (and every VRAM row
+ * above), worker 0 the rest. The split moves at vblanks, a few rows at a
+ * time, toward equal busy times; both read it only between the vblank's two
+ * rendezvous, so they always agree on who owns a row. */
+static int nworkers;
+static int split = 120;
+static uint64_t busy_us[2];
+uint32_t g_rt_gpu_split, g_rt_gpu_barriers; /* telemetry */
+
+static void apply_band(Parser* p) {
+    if (nworkers != 2) {
+        Draw_SetBand(0, VRAM_H - 1);
+        return;
+    }
+    int s = p->ay0 + split;
+    if (s > VRAM_H) s = VRAM_H;
+    if (soft_core() == 1) Draw_SetBand(0, s - 1);
+    else Draw_SetBand(s, VRAM_H - 1);
+}
+
+static volatile int bar_count;
+static volatile unsigned bar_gen;
+static void gpu_barrier(void) {
+    if (nworkers != 2) return;
+    const unsigned gen = __atomic_load_n(&bar_gen, __ATOMIC_ACQUIRE);
+    if (__atomic_add_fetch(&bar_count, 1, __ATOMIC_ACQ_REL) == 2) {
+        __atomic_store_n(&bar_count, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&bar_gen, gen + 1, __ATOMIC_RELEASE);
+        if (soft_core() == 1) g_rt_gpu_barriers++;
+        return;
+    }
+    const uint64_t t0 = plat_time_us();
+    uint32_t n = 0;
+    while (__atomic_load_n(&bar_gen, __ATOMIC_ACQUIRE) == gen) {
+        if ((++n & 0xFFF) == 0 && plat_time_us() - t0 > 2000000) {
+            RT_LOG("gpu: worker %d alone at a rendezvous for 2 s", soft_core());
+            break;
+        }
+    }
+}
 
 void rt_gpu_display(RtDisplay* d) {
     static const int hres[4] = {256, 320, 512, 640};
@@ -101,14 +166,24 @@ void rt_gpu_display(RtDisplay* d) {
     d->h = (disp_mode & 0x04) && (disp_mode & 0x20) ? 480 : 240;
     d->rgb24 = (disp_mode >> 4) & 1;
     d->enabled = !disp_off;
+    const int scale = d->h == 480 ? 2 : 1;
+    int top = (disp_y1 - 16) * scale, lines = (disp_y2 - disp_y1) * scale;
+    if (top < 0) top = 0;
+    if (top > d->h) top = d->h;
+    if (lines < 0) lines = 0;
+    if (top + lines > d->h) lines = d->h - top;
+    d->top = top;
+    d->lines = lines;
 }
 
 void gpu_reset(void) {
     Draw_Reset();
-    cmd_len = cmd_need = 0;
-    poly_line = 0;
-    xfer_in = xfer_out = 0;
-    stat_draw = 0;
+    memset(P, 0, sizeof P);
+    for (int i = 0; i < 2; i++) {
+        P[i].ax1 = VRAM_W - 1;
+        P[i].ay1 = VRAM_H - 1;
+    }
+    split = 120;
     disp_off = 1;
     if (!xfer_buf) xfer_buf = (uint16_t*)plat_alloc(VRAM_W * VRAM_H * 2 + 4);
     if (!xfer_buf) rt_fatal("no memory for VRAM transfers");
@@ -117,7 +192,7 @@ void gpu_reset(void) {
 int gpu_alloc(void) {
     if (!g_rt_vram) g_rt_vram = (u16*)plat_alloc(VRAM_W * VRAM_H * 2);
     if (async_on && !ring) ring = (uint32_t*)plat_alloc(RING_ENTRIES * 2 * sizeof(uint32_t));
-    ring_w = ring_r = 0;
+    ring_w = ring_r[0] = ring_r[1] = 0;
     return g_rt_vram != NULL;
 }
 
@@ -168,51 +243,67 @@ static void draw_line(uint32_t c0, uint32_t xy0, uint32_t c1, uint32_t xy1, int 
     Draw_PushPrim(pk, 4);
 }
 
+/* A textured primitive whose texture page overlaps the draw area samples
+ * pixels this frame is drawing: with two workers, both must have drawn
+ * everything before it. Decided from the stream alone, so both agree. */
+static int samples_draw_area(const Parser* p, uint32_t tpage) {
+    const int px = (int)(tpage & 0xF) * 64, py = (int)((tpage >> 4) & 1) * 256;
+    const int bpp = (tpage >> 7) & 3;
+    const int w = bpp == 0 ? 64 : bpp == 1 ? 128 : 256;
+    return px + w > p->ax0 && px <= p->ax1 && py + 256 > p->ay0 && py <= p->ay1;
+}
+
 /* rt_set_gpu_trace(n): log the state commands of frame n, with the number of
  * primitives between them (comparing a board against the desktop) */
 static uint32_t trace_frame = 0xFFFFFFFFu, trace_prims;
 void rt_set_gpu_trace(uint32_t frame) { trace_frame = frame; }
-static void trace_packet(uint32_t c) {
-    if (rt_frame_count() != trace_frame) return;
+static void trace_packet(const Parser* p, uint32_t c) {
+    if (rt_frame_count() != trace_frame || !is_lead()) return;
     if (c >= 0x20 && c < 0x80) {
         if (trace_prims++ < 6 && c < 0x40) {
             printf("[gpu] f%u prim", (unsigned)trace_frame);
-            for (int i = 0; i < cmd_len; i++) printf(" %08X", (unsigned)cmd[i]);
+            for (int i = 0; i < p->cmd_len; i++) printf(" %08X", (unsigned)p->cmd[i]);
             printf(" | ofs %d,%d clip %d..%d\n", st.ox, st.oy, st.y0, st.y1);
         }
         return;
     }
     printf("[gpu] f%u +%u prims | %02X %08X %08X %08X | band %d..%d area %d..%d clip %d..%d\n",
-           (unsigned)trace_frame, (unsigned)trace_prims, (unsigned)c, (unsigned)cmd[0],
-           (unsigned)(cmd_len > 1 ? cmd[1] : 0), (unsigned)(cmd_len > 2 ? cmd[2] : 0),
+           (unsigned)trace_frame, (unsigned)trace_prims, (unsigned)c, (unsigned)p->cmd[0],
+           (unsigned)(p->cmd_len > 1 ? p->cmd[1] : 0), (unsigned)(p->cmd_len > 2 ? p->cmd[2] : 0),
            st.band_y0, st.band_y1, st.area_y0, st.area_y1, st.y0, st.y1);
     trace_prims = 0;
 }
 
-/* g_rt_prof.gpu: the drawing's time. On the worker, its busy spells (timed
+/* g_rt_prof.gpu: the drawing's time. On a worker, its busy spells (timed
  * per ring drain: a clock read per packet cost the board ~1 us each);
  * synchronously, per packet. */
-static void exec_packet_(void);
+static void exec_packet_(Parser* p);
 static int timing_packets = 1;
-static void exec_packet(void) {
+static void exec_packet(Parser* p) {
     if (!timing_packets) {
-        exec_packet_();
+        exec_packet_(p);
         return;
     }
     uint64_t t0 = plat_time_us();
-    exec_packet_();
+    exec_packet_(p);
     g_rt_prof.gpu += plat_time_us() - t0;
 }
-static void exec_packet_(void) {
+static void exec_packet_(Parser* p) {
+    uint32_t* cmd = p->cmd;
     uint32_t c = cmd[0] >> 24;
-    trace_packet(c);
+    trace_packet(p, c);
     if (c >= 0x20 && c < 0x80) {
+        if (nworkers == 2 && (c & 4)) {
+            /* polygons carry their texpage in the second texcoord word */
+            uint32_t tp = c < 0x40 ? cmd[(c & 0x10) ? 5 : 4] >> 16 : p->tpage;
+            if (samples_draw_area(p, tp)) gpu_barrier();
+        }
         u_long pk[16];
-        for (int i = 0; i < cmd_len; i++) pk[i] = cmd[i];
-        Draw_PushPrim(pk, cmd_len);
+        for (int i = 0; i < p->cmd_len; i++) pk[i] = cmd[i];
+        Draw_PushPrim(pk, p->cmd_len);
         return;
     }
-    if (c == 0x02) { /* fill: ignores draw area, offset and mask */
+    if (c == 0x02) { /* fill: ignores draw area, offset and mask; band-clipped */
         RECT r;
         r.x = (short)(cmd[1] & 0x3F0);
         r.y = (short)((cmd[1] >> 16) & 0x1FF);
@@ -221,58 +312,70 @@ static void exec_packet_(void) {
         Draw_ClearImage(&r, cmd[0] & 0xFF, (cmd[0] >> 8) & 0xFF, (cmd[0] >> 16) & 0xFF);
         return;
     }
-    if (c >= 0x80 && c < 0xA0) { /* VRAM -> VRAM */
+    if (c >= 0x80 && c < 0xA0) { /* VRAM -> VRAM: one worker, the rows of both */
         RECT r;
         r.x = (short)(cmd[1] & 0x3FF);
         r.y = (short)((cmd[1] >> 16) & 0x1FF);
         r.w = (short)(cmd[3] & 0x3FF ? cmd[3] & 0x3FF : 0x400);
         r.h = (short)((cmd[3] >> 16) & 0x1FF ? (cmd[3] >> 16) & 0x1FF : 0x200);
-        Draw_MoveImage(&r, cmd[2] & 0x3FF, (cmd[2] >> 16) & 0x1FF);
+        gpu_barrier();
+        if (is_lead()) Draw_MoveImage(&r, cmd[2] & 0x3FF, (cmd[2] >> 16) & 0x1FF);
+        gpu_barrier();
         return;
     }
     if (c >= 0xA0 && c < 0xE0) {
-        RECT* r = &xfer_rect;
+        RECT* r = &p->xfer_rect;
         r->x = (short)(cmd[1] & 0x3FF);
         r->y = (short)((cmd[1] >> 16) & 0x1FF);
         r->w = (short)(((cmd[2] & 0xFFFF) - 1) & 0x3FF) + 1;
         r->h = (short)((((cmd[2] >> 16) & 0xFFFF) - 1) & 0x1FF) + 1;
-        xfer_words = ((uint32_t)r->w * r->h + 1) / 2;
-        xfer_pos = 0;
+        p->xfer_words = ((uint32_t)r->w * r->h + 1) / 2;
+        p->xfer_pos = 0;
         if (c < 0xC0) {
-            xfer_in = 1;
+            p->xfer_in = 1;
         } else {
-            Draw_StoreImage(r, (u_long*)xfer_buf);
-            if ((r->w * r->h) & 1) xfer_buf[r->w * r->h] = 0;
-            xfer_out = 1;
+            gpu_barrier();
+            if (is_lead()) {
+                Draw_StoreImage(r, (u_long*)xfer_buf);
+                if ((r->w * r->h) & 1) xfer_buf[r->w * r->h] = 0;
+                p->xfer_out = 1;
+            }
+            gpu_barrier();
         }
         return;
     }
     switch (c) {
     case 0xE1:
-        stat_draw = (stat_draw & ~0x7FFu) | (cmd[0] & 0x7FF);
+        p->stat_draw = (p->stat_draw & ~0x7FFu) | (cmd[0] & 0x7FF);
+        p->tpage = cmd[0] & 0xFFFF;
         {
             uint32_t w = cmd[0];
             Draw_SetTexpageMode((ParamDrawTexpageMode*)&w);
         }
         break;
     case 0xE2:
-        e2 = cmd[0] & 0xFFFFF;
-        Draw_SetTextureWindowE2(e2);
+        p->e2 = cmd[0] & 0xFFFFF;
+        Draw_SetTextureWindowE2(p->e2);
         break;
     case 0xE3:
-        e3 = cmd[0] & 0xFFFFF;
-        Draw_SetAreaStart(e3 & 0x3FF, (e3 >> 10) & 0x1FF);
+        p->e3 = cmd[0] & 0xFFFFF;
+        p->ax0 = p->e3 & 0x3FF;
+        p->ay0 = (p->e3 >> 10) & 0x1FF;
+        Draw_SetAreaStart(p->ax0, p->ay0);
+        apply_band(p);
         break;
     case 0xE4:
-        e4 = cmd[0] & 0xFFFFF;
-        Draw_SetAreaEnd(e4 & 0x3FF, (e4 >> 10) & 0x1FF);
+        p->e4 = cmd[0] & 0xFFFFF;
+        p->ax1 = p->e4 & 0x3FF;
+        p->ay1 = (p->e4 >> 10) & 0x1FF;
+        Draw_SetAreaEnd(p->ax1, p->ay1);
         break;
     case 0xE5:
-        e5 = cmd[0] & 0x3FFFFF;
-        Draw_SetOffset(s11v(e5), s11v(e5 >> 11));
+        p->e5 = cmd[0] & 0x3FFFFF;
+        Draw_SetOffset(s11v(p->e5), s11v(p->e5 >> 11));
         break;
     case 0xE6:
-        stat_draw = (stat_draw & ~0x1800u) | ((cmd[0] & 3) << 11);
+        p->stat_draw = (p->stat_draw & ~0x1800u) | ((cmd[0] & 3) << 11);
         Draw_SetMask(cmd[0] & 1, (cmd[0] >> 1) & 1);
         break;
     default:
@@ -280,77 +383,87 @@ static void exec_packet_(void) {
     }
 }
 
-static void gp0_exec(uint32_t w) {
-    if (xfer_in) {
-        xfer_buf[2 * xfer_pos] = (uint16_t)w;
-        xfer_buf[2 * xfer_pos + 1] = (uint16_t)(w >> 16);
-        if (++xfer_pos >= xfer_words) {
-            xfer_in = 0;
-            uint64_t t0 = timing_packets ? plat_time_us() : 0;
-            Draw_LoadImage(&xfer_rect, (u_long*)xfer_buf);
-            if (timing_packets) g_rt_prof.gpu += plat_time_us() - t0;
+static void gp0_exec(Parser* p, uint32_t w) {
+    if (p->xfer_in) {
+        const int lead = is_lead();
+        if (lead) {
+            xfer_buf[2 * p->xfer_pos] = (uint16_t)w;
+            xfer_buf[2 * p->xfer_pos + 1] = (uint16_t)(w >> 16);
+        }
+        if (++p->xfer_pos >= p->xfer_words) {
+            p->xfer_in = 0;
+            /* one worker writes it, and nobody draws past it before then:
+             * it may be a texture the other band's next primitive reads, or
+             * a picture the other worker is about to draw over */
+            gpu_barrier();
+            if (lead) {
+                uint64_t t0 = timing_packets ? plat_time_us() : 0;
+                Draw_LoadImage(&p->xfer_rect, (u_long*)xfer_buf);
+                if (timing_packets) g_rt_prof.gpu += plat_time_us() - t0;
+            }
+            gpu_barrier();
         }
         return;
     }
-    if (poly_line) {
-        if ((w & 0xF000F000u) == 0x50005000u && !pl_expect_color) {
-            poly_line = 0;
+    if (p->poly_line) {
+        if ((w & 0xF000F000u) == 0x50005000u && !p->pl_expect_color) {
+            p->poly_line = 0;
             return;
         }
-        if (pl_expect_color) {
-            pl_color = w;
-            pl_expect_color = 0;
+        if (p->pl_expect_color) {
+            p->pl_color = w;
+            p->pl_expect_color = 0;
             return;
         }
-        if (pl_have_prev) draw_line(pl_prev_color, pl_prev_xy, pl_color, w, (cmd[0] >> 25) & 1);
-        pl_prev_color = pl_color;
-        pl_prev_xy = w;
-        pl_have_prev = 1;
-        pl_expect_color = pl_gouraud;
+        if (p->pl_have_prev) draw_line(p->pl_prev_color, p->pl_prev_xy, p->pl_color, w, (p->cmd[0] >> 25) & 1);
+        p->pl_prev_color = p->pl_color;
+        p->pl_prev_xy = w;
+        p->pl_have_prev = 1;
+        p->pl_expect_color = p->pl_gouraud;
         return;
     }
-    if (cmd_len == 0) {
+    if (p->cmd_len == 0) {
         uint32_t c = w >> 24;
         if (c >= 0x40 && c < 0x60 && (c & 0x08)) { /* polyline */
-            cmd[0] = w;
-            poly_line = 1;
-            pl_gouraud = (c & 0x10) != 0;
-            pl_color = w;
-            pl_have_prev = 0;
-            pl_expect_color = 0;
+            p->cmd[0] = w;
+            p->poly_line = 1;
+            p->pl_gouraud = (c & 0x10) != 0;
+            p->pl_color = w;
+            p->pl_have_prev = 0;
+            p->pl_expect_color = 0;
             return;
         }
-        cmd_need = packet_len(w);
+        p->cmd_need = packet_len(w);
     }
-    cmd[cmd_len++] = w;
-    if (cmd_len >= cmd_need) {
-        exec_packet();
-        cmd_len = 0;
+    p->cmd[p->cmd_len++] = w;
+    if (p->cmd_len >= p->cmd_need) {
+        exec_packet(p);
+        p->cmd_len = 0;
     }
 }
 
 /* GP1, the drawing side: what the command stream's parser and the GP0
  * state own (runs where GP0 runs) */
-static void gp1_exec(uint32_t w) {
+static void gp1_exec(Parser* p, uint32_t w) {
     uint32_t c = (w >> 24) & 0x3F;
     switch (c) {
     case 0x00:
-        cmd_len = 0;
-        poly_line = xfer_in = xfer_out = 0;
-        stat_draw = 0;
+        p->cmd_len = 0;
+        p->poly_line = p->xfer_in = p->xfer_out = 0;
+        p->stat_draw = 0;
         break;
     case 0x01:
-        cmd_len = 0;
-        poly_line = xfer_in = 0;
+        p->cmd_len = 0;
+        p->poly_line = p->xfer_in = 0;
         break;
     case 0x10: case 0x11: case 0x12: case 0x13: case 0x14: case 0x15: case 0x16: case 0x17:
     case 0x18: case 0x19: case 0x1A: case 0x1B: case 0x1C: case 0x1D: case 0x1E: case 0x1F:
         switch (w & 7) {
-        case 2: gpuread_latch = e2; break;
-        case 3: gpuread_latch = e3; break;
-        case 4: gpuread_latch = e4; break;
-        case 5: gpuread_latch = e5; break;
-        case 7: gpuread_latch = 2; break; /* GPU version */
+        case 2: p->gpuread_latch = p->e2; break;
+        case 3: p->gpuread_latch = p->e3; break;
+        case 4: p->gpuread_latch = p->e4; break;
+        case 5: p->gpuread_latch = p->e5; break;
+        case 7: p->gpuread_latch = 2; break; /* GPU version */
         default: break;
         }
         break;
@@ -362,57 +475,118 @@ static void gp1_exec(uint32_t w) {
  * the display area for the vblank) */
 static void gp1_display(uint32_t w) {
     switch ((w >> 24) & 0x3F) {
-    case 0x00: disp_off = 1; dma_dir = 0; break;
+    case 0x00: disp_off = 1; dma_dir = 0; disp_y1 = 16; disp_y2 = 256; break;
     case 0x03: disp_off = w & 1; break;
     case 0x04: dma_dir = w & 3; break;
     case 0x05:
         disp_x = w & 0x3FE;
         disp_y = (w >> 10) & 0x1FF;
         break;
+    case 0x07:
+        disp_y1 = (int)(w & 0x3FF);
+        disp_y2 = (int)((w >> 10) & 0x3FF);
+        break;
     case 0x08: disp_mode = w & 0xFF; break;
     default: break;
     }
 }
 
-/* ---- the GPU on another thread (rt_gpu_set_async) ----
+/* ---- the GPU on other threads (rt_gpu_set_async) ----
  * The real GPU works through its command FIFO while the CPU runs on; here
  * the CPU's thread queues GP0 words (and the drawing half of GP1) in a ring,
- * and rt_gpu_worker() executes them on another core. A vblank marker in the
- * ring presents the display after exactly the drawing queued before it.
- * Reads of GPU state that depend on the drawing (GPUREAD, VRAM -> CPU) wait
- * for the ring to drain. */
+ * and one or two workers execute them on the other cores. A vblank marker
+ * in the ring presents the display after exactly the drawing queued before
+ * it. Reads of GPU state that depend on the drawing (GPUREAD, VRAM -> CPU)
+ * wait for the ring to drain. */
 enum { Q_GP0, Q_GP1, Q_VBLANK };
 
-void rt_gpu_set_async(int on) { async_on = on; }
+void rt_gpu_set_async(int n) {
+    async_on = n > 0;
+    nworkers = n;
+}
 
 static inline uint32_t ring_load(uint32_t* p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
+static inline uint32_t ring_tail(void) {
+    uint32_t a = ring_load(&ring_r[1]);
+    if (nworkers == 2) {
+        uint32_t b = ring_load(&ring_r[0]);
+        if ((int32_t)(b - a) < 0) a = b;
+    }
+    return a;
+}
 
 static void ring_push(uint32_t kind, uint32_t v) {
     uint32_t w = ring_w;
-    while (w - ring_load(&ring_r) >= RING_ENTRIES) plat_gpu_idle(); /* full: wait */
+    if (w - ring_tail() >= RING_ENTRIES) { /* full: wait for the workers */
+        prod_wait = 1;
+        while (w - ring_tail() >= RING_ENTRIES) plat_gpu_idle();
+        prod_wait = 0;
+    }
     uint32_t i = (w & (RING_ENTRIES - 1)) * 2;
     ring[i] = kind;
     ring[i + 1] = v;
     __atomic_store_n(&ring_w, w + 1, __ATOMIC_RELEASE);
-    if (w == ring_load(&ring_r)) plat_gpu_kick(); /* it was empty: wake the worker */
+    if (w == ring_load(&ring_r[1]) || (nworkers == 2 && w == ring_load(&ring_r[0])))
+        plat_gpu_kick(); /* a worker had run dry: wake it */
 }
 
 static void gpu_drain(void) {
     if (!async_on || !ring) return;
     plat_gpu_kick();
-    while (ring_load(&ring_r) != ring_w) plat_gpu_idle();
+    if (ring_tail() != ring_w) {
+        prod_wait = 1;
+        while (ring_tail() != ring_w) plat_gpu_idle();
+        prod_wait = 0;
+    }
 }
 
-void rt_gpu_worker(volatile int* stop) {
+/* the vblank marker: both workers have drawn everything before it; the lead
+ * moves the split and presents while the other waits */
+static void vblank_marker(uint32_t kind, uint32_t v) {
+    gpu_barrier();
+    if (is_lead()) {
+        if (nworkers == 2) {
+            if (busy_us[1] > busy_us[0] + 1000 && split > 16) split -= 4;
+            else if (busy_us[0] > busy_us[1] + 1000 && split < 232) split += 4;
+            busy_us[0] = busy_us[1] = 0;
+            g_rt_gpu_split = (uint32_t)split;
+        }
+        RtDisplay d;
+        d.x = (int)(v & 0x3FF);
+        d.y = (int)((v >> 10) & 0x1FF);
+        d.w = (int)((v >> 19) & 0x3FF);
+        d.h = (v >> 29) & 1 ? 480 : 240;
+        d.rgb24 = (int)((v >> 30) & 1);
+        d.enabled = (int)((v >> 31) & 1);
+        d.top = (int)((kind >> 8) & 0x3FF);
+        d.lines = (int)((kind >> 20) & 0x3FF);
+        plat_display_ready(&d);
+    }
+    gpu_barrier();
+    apply_band(me()); /* the split may have moved */
+}
+
+/* idx: 1 for the lead worker (with two: the top band), 0 for the second.
+ * On the board each runs on the core of the same number. */
+void rt_gpu_worker_n(volatile int* stop, int idx) {
+#ifndef ESP_PLATFORM
+    psyz_host_core = idx;
+#endif
+    if (soft_core() != idx) RT_LOG("gpu: worker %d is on core %d", idx, soft_core());
+    Parser* p = &P[idx];
     uint64_t busy_since = 0;
     timing_packets = 0;
+    apply_band(p);
     while (!*stop) {
-        uint32_t r = ring_r;
+        uint32_t r = ring_r[idx];
         if (r == ring_load(&ring_w)) {
             if (busy_since) {
-                g_rt_prof.gpu += plat_time_us() - busy_since;
+                uint64_t d = plat_time_us() - busy_since;
+                busy_us[idx] += d;
+                if (idx == 1) g_rt_prof.gpu += d;
                 busy_since = 0;
             }
+            if (prod_wait) plat_gpu_wake_producer();
             plat_gpu_idle();
             continue;
         }
@@ -420,27 +594,27 @@ void rt_gpu_worker(volatile int* stop) {
         uint32_t i = (r & (RING_ENTRIES - 1)) * 2;
         uint32_t kind = ring[i], v = ring[i + 1];
         if (kind == Q_GP0) {
-            gp0_exec(v);
+            gp0_exec(p, v);
         } else if (kind == Q_GP1) {
-            gp1_exec(v);
+            gp1_exec(p, v);
         } else {
-            /* vblank: the display registers as the CPU's thread saw them */
-            RtDisplay d;
-            d.x = (int)(v & 0x3FF);
-            d.y = (int)((v >> 10) & 0x1FF);
-            d.w = (int)((v >> 19) & 0x3FF);
-            d.h = (v >> 29) & 1 ? 480 : 240;
-            d.rgb24 = (int)((v >> 30) & 1);
-            d.enabled = (int)((v >> 31) & 1);
-            plat_display_ready(&d);
+            if (busy_since) { /* the rendezvous is not work */
+                uint64_t d = plat_time_us() - busy_since;
+                busy_us[idx] += d;
+                if (idx == 1) g_rt_prof.gpu += d;
+            }
+            vblank_marker(kind, v);
+            busy_since = plat_time_us();
         }
-        __atomic_store_n(&ring_r, r + 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&ring_r[idx], r + 1, __ATOMIC_RELEASE);
+        if (prod_wait && (r & 1023) == 0) plat_gpu_wake_producer();
     }
 }
+void rt_gpu_worker(volatile int* stop) { rt_gpu_worker_n(stop, 1); }
 
 void gpu_gp0(uint32_t w) {
     if (async_on && ring) ring_push(Q_GP0, w);
-    else gp0_exec(w);
+    else gp0_exec(&P[0], w);
 }
 
 void gpu_gp1(uint32_t w) {
@@ -448,7 +622,7 @@ void gpu_gp1(uint32_t w) {
     uint32_t c = (w >> 24) & 0x3F;
     if (c == 0x00 || c == 0x01 || c >= 0x10) {
         if (async_on && ring) ring_push(Q_GP1, w);
-        else gp1_exec(w);
+        else gp1_exec(&P[0], w);
     }
 }
 
@@ -460,7 +634,7 @@ void gpu_present(void) {
         uint32_t v = (uint32_t)(d.x & 0x3FF) | ((uint32_t)(d.y & 0x1FF) << 10) |
                      ((uint32_t)(d.w & 0x3FF) << 19) | ((uint32_t)(d.h == 480) << 29) |
                      ((uint32_t)(d.rgb24 & 1) << 30) | ((uint32_t)(d.enabled & 1) << 31);
-        ring_push(Q_VBLANK, v);
+        ring_push(Q_VBLANK | ((uint32_t)d.top << 8) | ((uint32_t)d.lines << 20), v);
         plat_gpu_kick();
     } else {
         plat_display_ready(&d);
@@ -469,18 +643,21 @@ void gpu_present(void) {
 
 uint32_t gpu_read(void) {
     gpu_drain();
-    if (xfer_out) {
-        uint32_t v = xfer_buf[2 * xfer_pos] | ((uint32_t)xfer_buf[2 * xfer_pos + 1] << 16);
-        if (++xfer_pos >= xfer_words) xfer_out = 0;
+    Parser* p = &P[lead_idx()];
+    if (p->xfer_out) {
+        uint32_t v = xfer_buf[2 * p->xfer_pos] | ((uint32_t)xfer_buf[2 * p->xfer_pos + 1] << 16);
+        if (++p->xfer_pos >= p->xfer_words) p->xfer_out = 0;
         return v;
     }
-    return gpuread_latch;
+    return p->gpuread_latch;
 }
 
 uint32_t gpu_stat(void) {
     static uint32_t toggle;
-    uint32_t s = stat_draw & 0x7FF;
-    s |= (stat_draw & 0x1800);
+    const Parser* p = &P[lead_idx()];
+    const int xfer_out = p->xfer_out;
+    uint32_t s = p->stat_draw & 0x7FF;
+    s |= (p->stat_draw & 0x1800);
     s |= 1u << 13;
     s |= (uint32_t)(disp_mode & 0x40) << 10; /* bit 16 */
     s |= (uint32_t)(disp_mode & 0x3F) << 17; /* bits 17-22 */

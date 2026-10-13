@@ -32,7 +32,7 @@ $(BUILD)/obj/recomp_%.o: $(BUILD)/gen/recomp_%.c $(wildcard runtime/*.h)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 vpath %.c runtime $(PSYZ)/src/psyz host
-$(BUILD)/obj/%.o: %.c $(BUILD)/gen/.stamp $(wildcard runtime/*.h)
+$(BUILD)/obj/%.o: %.c $(BUILD)/gen/.stamp $(wildcard runtime/*.h) $(PSYZ)/src/platform/soft_raster.inc.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

@@ -35,7 +35,8 @@ ROOT = os.path.dirname(HERE)
 # USA Rev 1 layout (see docs/LAYOUT.md)
 CODE = [(0x80010000, 0x80071590), (0x800838E4, 0x8008585C)]
 DATA_IN_TEXT = [(0x80057734, 0x80057738), (0x8005B678, 0x8005B67C),
-                (0x8005C168, 0x8005D970)]
+                (0x8005C168, 0x8005D970),
+                (0x8005F3C4, 0x8005F3D4)]  # libsnd: jump table (0x8005FE84)
 DATA = [(0x80071590, 0x800838E4), (0x8008585C, 0x80086800)]
 ENTRY_FILE = os.path.join(ROOT, "config", "recomp_entries.us.txt")
 HLE_FILE = os.path.join(ROOT, "recomp", "hle.us.txt")
@@ -636,9 +637,9 @@ def build_functions(insns, ents, taken):
 # back unchanged. The prologue's `sw $sN, k($sp)` of a register the function
 # restores before every exit is not a use (it saves whatever is there).
 # Indirect calls, BIOS calls, HLE functions and traps keep the full traffic.
-# The `jr $ra` that does not return and the jump table that leaves its
-# function are assumed not to happen: the runtime reports them (rt_jump_ra,
-# rt_jump_tbl).
+# The `jr $ra` that does not return is assumed not to happen (rt_jump_ra
+# reports it); a jump table may leave its function (a tail call through a
+# pointer).
 
 NREG = 34
 ALL = ((1 << NREG) - 1) & ~1
@@ -797,7 +798,10 @@ class RegFlow:
                     if i.rs == RA:
                         u.kind = "ret"
                         u.exits.append(("ret",))
-                    elif not f.jr_targets:
+                    else:
+                        # a jump table may hold other functions too (tail
+                        # calls): the analysis takes those as calls through
+                        # a pointer
                         u.exits.append(("ind",))
                     for t in f.jr_targets:
                         fixups.append((u, t))

@@ -41,8 +41,9 @@ void plat_free(void* p) { free(p); }
 void plat_sleep_us(uint32_t us) { usleep(us); }
 void plat_gpu_kick(void) {}
 void plat_gpu_idle(void) { usleep(20); }
+void plat_gpu_wake_producer(void) {}
 static volatile int gpu_stop;
-static void* gpu_thread(void* arg) { (void)arg; rt_gpu_worker(&gpu_stop); return NULL; }
+static void* gpu_thread(void* arg) { rt_gpu_worker_n(&gpu_stop, (int)(intptr_t)arg); return NULL; }
 void plat_pause_wait(void) {}
 
 static FILE* wav;
@@ -162,7 +163,8 @@ static void dump(uint32_t frame, RtDisplay d) {
         w = d.w; h = d.h;
         rgb = calloc((size_t)w * h, 3);
         for (int y = 0; y < h && d.enabled; y++) {
-            int vy = (d.y + y) & 511;
+            if (y < d.top || y >= d.top + d.lines) continue; /* outside the display range */
+            int vy = (d.y + y - d.top) & 511;
             if (d.rgb24) {
                 const uint8_t* row = (const uint8_t*)&g_rt_vram[vy * 1024];
                 for (int x = 0; x < w; x++) {
@@ -221,7 +223,7 @@ static uint16_t parse_buttons(const char* s) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--realtime] [--async-gpu]\n", argv[0]);
+        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--realtime] [--async-gpu] [--gpu-workers 2]\n", argv[0]);
         return 2;
     }
     for (int i = 3; i < argc; i++) {
@@ -231,6 +233,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--vram")) dump_vram = 1;
         else if (!strcmp(argv[i], "--realtime")) rt_set_realtime(1);
         else if (!strcmp(argv[i], "--async-gpu")) async_gpu = 1;
+        else if (!strcmp(argv[i], "--gpu-workers") && i + 1 < argc) async_gpu = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--gpu-trace") && i + 1 < argc) rt_set_gpu_trace((uint32_t)atoi(argv[++i]));
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
             wav = fopen(argv[++i], "wb");
@@ -260,8 +263,9 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (async_gpu) {
         pthread_t t;
-        rt_gpu_set_async(1);
-        pthread_create(&t, NULL, gpu_thread, NULL);
+        rt_gpu_set_async(async_gpu > 1 ? 2 : 1);
+        pthread_create(&t, NULL, gpu_thread, (void*)(intptr_t)1);
+        if (async_gpu > 1) pthread_create(&t, NULL, gpu_thread, (void*)(intptr_t)0);
     }
     rt_boot(exe, (uint32_t)n);
     rt_shutdown();
