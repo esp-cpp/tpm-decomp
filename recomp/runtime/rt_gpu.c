@@ -514,6 +514,7 @@ void rt_gpu_set_async(int n) {
     nworkers = n;
 }
 
+#define KICK_BATCH 256u
 static inline uint32_t ring_load(uint32_t* p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
 static inline uint32_t ring_tail(void) {
     uint32_t a = ring_load(&ring_r[1]);
@@ -527,6 +528,7 @@ static inline uint32_t ring_tail(void) {
 static void ring_push(uint32_t kind, uint32_t v) {
     uint32_t w = ring_w;
     if (w - ring_tail() >= RING_ENTRIES) { /* full: wait for the workers */
+        plat_gpu_kick();
         prod_wait = 1;
         while (w - ring_tail() >= RING_ENTRIES) plat_gpu_idle();
         prod_wait = 0;
@@ -535,8 +537,13 @@ static void ring_push(uint32_t kind, uint32_t v) {
     ring[i] = kind;
     ring[i + 1] = v;
     __atomic_store_n(&ring_w, w + 1, __ATOMIC_RELEASE);
-    if (w == ring_load(&ring_r[1]) || (nworkers == 2 && w == ring_load(&ring_r[0])))
-        plat_gpu_kick(); /* a worker had run dry: wake it */
+    /* a worker that ran dry is woken once a batch has built up (or at the
+     * vblank, a drain, a full queue; it also looks again every tick): a
+     * wake per word cost the board a context switch per word, and the
+     * second worker preempts the game on its core */
+    if (w + 1 - ring_load(&ring_r[1]) == KICK_BATCH ||
+        (nworkers == 2 && w + 1 - ring_load(&ring_r[0]) == KICK_BATCH))
+        plat_gpu_kick();
 }
 
 static void gpu_drain(void) {
