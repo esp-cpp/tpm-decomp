@@ -54,10 +54,21 @@ static uint32_t rc_div(int n) {
     if (n == 2 && (src & 2)) return 8;
     return 1;
 }
+/* The count since `base`, in 32-bit arithmetic (a 64-bit divide is a ROM
+ * library call on the board, and the game polls the counters): `base` moves
+ * up by whole counter periods when the distance outgrows 31 bits. */
 static uint32_t rc_value(int n) {
-    uint64_t ticks = (g_now - rc[n].base) / rc_div(n);
-    if ((rc[n].mode & 0x08) && rc[n].target) ticks %= (uint64_t)rc[n].target + 1;
-    return (uint32_t)(ticks & 0xFFFF);
+    uint32_t div = rc_div(n);
+    uint32_t period = (rc[n].mode & 0x08) && rc[n].target ? (uint32_t)rc[n].target + 1 : 0x10000u;
+    uint64_t d = g_now - rc[n].base;
+    if (d >> 31) {
+        uint64_t span = (uint64_t)div * period;
+        rc[n].base += (d / span) * span;
+        d = g_now - rc[n].base;
+    }
+    uint32_t ticks = (uint32_t)d / div;
+    if (period != 0x10000u) ticks %= period;
+    return ticks & 0xFFFF;
 }
 
 /* ---- DMA ---- */
@@ -153,11 +164,17 @@ static uint64_t spu_frames; /* sample frames produced so far */
 
 static uint16_t spu_read(uint32_t off) { return Psyz_SpuRead(off); }
 
-/* run the SPU up to g_now, in chunks */
+/* run the SPU up to g_now, in chunks; spu_next is the cycle at which the
+ * next chunk is due (a 64-bit divide per poll is a ROM call on the board) */
+static uint64_t spu_next;
 static void spu_update(void) {
-    uint64_t due = g_now * SPU_HZ / CPU_HZ;
     static short buf[2 * 256];
-    if (spu_frames + 64 > due) goto irq;
+    if (g_now < spu_next) goto irq;
+    uint64_t due = g_now * SPU_HZ / CPU_HZ;
+    if (spu_frames + 64 > due) {
+        spu_next = ((spu_frames + 64) * CPU_HZ + SPU_HZ - 1) / SPU_HZ;
+        goto irq;
+    }
     uint64_t t0 = plat_time_us();
     while (spu_frames + 64 <= due) {
         int n = (int)(due - spu_frames);
@@ -166,6 +183,7 @@ static void spu_update(void) {
         plat_audio(buf, n);
         spu_frames += (uint64_t)n;
     }
+    spu_next = ((spu_frames + 64) * CPU_HZ + SPU_HZ - 1) / SPU_HZ;
     g_rt_prof.spu += plat_time_us() - t0;
 irq:
     if (psyz_pending_spu_irq > 0) {
@@ -331,8 +349,33 @@ void hw_reset(void) {
     Psyz_SpuInit();
     Psyz_SpuReset(0);
     spu_frames = g_now * SPU_HZ / CPU_HZ;
+    spu_next = 0;
     gpu_reset();
     cd_reset();
+}
+
+/* VSync(-1) twice in a row with no vblank and almost no time between, from
+ * a caller that only waits (rt_hle.c): the game is idle until the vblank. Go there (in steps, so the CD and SPU
+ * keep their timing, stopping early if an interrupt comes first); the
+ * vblank interrupt then runs as it would have. Decided on emulated state
+ * only, so it is the same on every machine. */
+void hw_vsync_poll(void) {
+    static uint32_t last_frame;
+    static uint64_t last_now;
+    static int spins;
+    if (frames == last_frame && g_now - last_now < 8192) spins++;
+    else spins = 0;
+    last_frame = frames;
+    last_now = g_now;
+    if (spins < 2) return;
+    while (g_now < next_vblank && !(i_stat & i_mask)) {
+        uint64_t step = next_vblank - g_now;
+        if (step > 1536) step = 1536; /* a poll's worth, as the loop had */
+        g_now += step;
+        hw_update();
+    }
+    rt_check_irq();
+    last_now = g_now;
 }
 
 void hw_update(void) {

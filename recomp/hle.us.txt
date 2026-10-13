@@ -30,3 +30,6 @@
 # the movie player's trampoline (calls the FMV.CPE overlay): rt_hle.c can
 # skip movies until MDEC is emulated
 0x80083F00 CallOverlay
+# libetc's VSync: VSync(-1) polled in a loop is the game waiting for the
+# next vblank; the wrapper lets emulated time go there directly
+0x80060D38 VSync wrap

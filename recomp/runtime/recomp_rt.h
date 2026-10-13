@@ -175,6 +175,10 @@ RT_INLINE void rt_leave_(int* d) { g_shadow_n = *d; }
 /* hooks the generated code calls */
 void rt_dispatch(uint32_t target);           /* call through a pointer */
 void rt_jump(uint32_t target, uint32_t pc);  /* jr to somewhere unknown */
+void rt_jump_ra(uint32_t target, uint32_t pc);  /* jr $ra that does not return */
+void rt_jump_tbl(uint32_t target, uint32_t pc); /* jump table leaving its function */
+void rt_dispatch_ind(uint32_t target);          /* jalr: a call through a pointer */
+void rt_jump_ind(uint32_t target, uint32_t pc); /* jr: a tail call through a pointer */
 void rt_fallthrough(uint32_t target);
 void rt_syscall(uint32_t pc);
 void rt_break(uint32_t pc, uint32_t insn);
@@ -191,6 +195,8 @@ typedef struct {
 extern const RecompFunc g_recomp_funcs[];
 extern const unsigned g_recomp_nfuncs;
 extern const char* const g_recomp_names[][2];
+extern const uint32_t g_recomp_indirect[]; /* sorted; empty without the analysis */
+extern const unsigned g_recomp_nindirect;
 extern const unsigned g_recomp_nnames;
 
 #ifdef __cplusplus

@@ -94,6 +94,54 @@ void rt_jump(uint32_t t, uint32_t pc) {
              (unsigned)pc, (unsigned)g_cpu.r[31]);
 }
 
+/* The register analysis (tools/recomp.py) assumes a `jr $ra` returns and a
+ * jump table stays in its function. Either one leaving means the caller may
+ * not have passed every register: say so (once per site), then go. */
+static void jump_unexpected(const char* what, uint32_t t, uint32_t pc) {
+    static uint32_t seen[16];
+    static int nseen;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i] == pc) return;
+    if (nseen < 16) seen[nseen++] = pc;
+    printf("[recomp] %s at %08X went to %08X: registers may be stale\n", what,
+           (unsigned)pc, (unsigned)t);
+}
+void rt_jump_ra(uint32_t t, uint32_t pc) {
+    jump_unexpected("jr $ra", t, pc);
+    rt_jump(t, pc);
+}
+void rt_jump_tbl(uint32_t t, uint32_t pc) {
+    jump_unexpected("jump table", t, pc);
+    rt_jump(t, pc);
+}
+
+/* Calls through pointers: the analysis passes the registers any
+ * address-taken function may read. A target it did not see is a function
+ * whose address it missed: RT_DEBUG builds report it. */
+#ifdef RT_DEBUG
+static void check_indirect(uint32_t t) {
+    if (!g_recomp_nindirect || t == 0xA0 || t == 0xB0 || t == 0xC0) return;
+    unsigned lo = 0, hi = g_recomp_nindirect;
+    while (lo < hi) {
+        unsigned mid = (lo + hi) / 2;
+        if (g_recomp_indirect[mid] == t) return;
+        if (g_recomp_indirect[mid] < t) lo = mid + 1;
+        else hi = mid;
+    }
+    jump_unexpected("call through a pointer", t, g_cpu.r[31]);
+}
+#else
+#define check_indirect(t) ((void)0)
+#endif
+void rt_dispatch_ind(uint32_t t) {
+    check_indirect(t);
+    rt_dispatch(t);
+}
+void rt_jump_ind(uint32_t t, uint32_t pc) {
+    check_indirect(t);
+    rt_jump(t, pc);
+}
+
 void rt_fallthrough(uint32_t t) {
     rt_fatal("fell through into %08X, not a function", (unsigned)t);
 }

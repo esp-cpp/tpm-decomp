@@ -44,6 +44,22 @@ void hle_vblank(void) {
     }
 }
 
+/* ---- libetc: VSync(mode) ----
+ * The game's frame limiter spins on VSync(-1) until the vblank count moves.
+ * The R3000 would sit in that loop until the interrupt; here emulated time
+ * goes straight to it (hw_vsync_poll), which the board needs: every turn of
+ * the loop costs it about as much as it cost the PlayStation (a fifth of
+ * the board's game thread was this loop). */
+void o_80060D38(void); /* the recompiled VSync */
+void hle_VSync(void) {
+    /* only the frame limiter (0x800110F8): libcd and libgpu poll VSync(-1)
+     * for their timeouts while they wait on hardware, and skipping there
+     * broke the display */
+    uint32_t ra = g_cpu.r[31];
+    if ((int32_t)A0 < 0 && (ra == 0x80011128u || ra == 0x80011184u)) hw_vsync_poll();
+    o_80060D38();
+}
+
 /* ---- BIOS patches: they rewrite kernel code we do not have ---- */
 void hle__patch_gte(void) {}
 void hle__patch_card(void) {}

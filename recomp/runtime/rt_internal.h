@@ -31,6 +31,7 @@ void hw_update(void);
 uint32_t hw_istat(void);
 uint32_t hw_imask(void);
 void hw_irq(int line); /* raise I_STAT bit `line` */
+void hw_vsync_poll(void); /* VSync(-1): skip a busy wait to the vblank */
 enum { IRQ_VBLANK = 0, IRQ_GPU = 1, IRQ_CDROM = 2, IRQ_DMA = 3, IRQ_TMR0 = 4,
        IRQ_TMR1 = 5, IRQ_TMR2 = 6, IRQ_SIO = 7, IRQ_SPU = 9 };
 
