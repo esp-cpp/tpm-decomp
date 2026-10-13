@@ -70,8 +70,19 @@ print the guest call chain, `RT_TRACE=1` logs CD / DMA / interrupt traffic,
 ## Status
 
 Boots through the memory-card notice, the loading screens and the level
-intro into the first level (Trade Federation ship), in 3D. The SPU produces
-sound (measured, not yet listened to).
+intro into the first level (Trade Federation ship), in 3D: on the desktop
+(~1100 fps, release build) and on the M5Stack Tab5 (ESP32-P4, ~12 fps of the
+game's 30, with the GPU on the second core; see tab5-emu's
+`components/tpm/README.md`). The SPU produces sound (measured, not yet
+listened to).
+
+The emulated timeline is deterministic (emulated time advances with the work
+done; real-time mode only throttles), so the same `--press` script gives the
+same frames on every machine: `--gpu-trace N` on the desktop and the board's
+GPU trace can be diffed line by line.
 
 Not yet: movies (MDEC), XA-ADPCM audio (speech / music streamed from the
 disc), memory cards, root-counter interrupts.
+
+Runner options: `--realtime` (pace to the wall clock), `--async-gpu` (the
+GPU's command stream on a second thread, as on the board), `--gpu-trace N`.
