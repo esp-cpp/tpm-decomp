@@ -31,6 +31,8 @@ __thread int psyz_host_core;
 #endif
 #ifdef ESP_PLATFORM
 #define SOFT_RASTER_RECIP      /* RV32: no 64-bit divide (GCC nested function) */
+#define SOFT_RASTER_NO_STATS   /* psyz's per-row / per-primitive counters (MGS's
+                                * telemetry) cost the board ~3% of its drawing */
 #define SOFT_RASTER_FLOAT_GRAD /* ...and the P4 has an FPU: gradients in float
                                 * (exact fix-up included; the MGS port's setting) */
 #endif
@@ -635,7 +637,72 @@ void rt_gpu_worker_n(volatile int* stop, int idx) {
 }
 void rt_gpu_worker(volatile int* stop) { rt_gpu_worker_n(stop, 1); }
 
+/* ---- recording the command stream (rt_gpu_record) and replaying it
+ * (rt_gpu_bench): the same frames through the rasterizer on any machine ----
+ * File: "TPMG" u32 version, then VRAM (1 MB), then [kind, value] pairs. */
+static FILE* rec_f;
+static uint32_t rec_from, rec_to;
+static void rec_put(uint32_t kind, uint32_t v) {
+    if (!rec_f) return;
+    uint32_t f = rt_frame_count();
+    if (f < rec_from) return;
+    if (f >= rec_to) {
+        fclose(rec_f);
+        rec_f = NULL;
+        RT_LOG("gpu: recording done");
+        return;
+    }
+    static int started;
+    if (!started) {
+        started = 1;
+        gpu_drain();
+        const uint32_t hdr[2] = {0x47504D54u, 1};
+        fwrite(hdr, 4, 2, rec_f);
+        fwrite(g_rt_vram, 2, VRAM_W * VRAM_H, rec_f);
+    }
+    const uint32_t e[2] = {kind, v};
+    fwrite(e, 4, 2, rec_f);
+}
+void rt_gpu_record(const char* path, uint32_t from, uint32_t frames) {
+    rec_f = fopen(path, "wb");
+    rec_from = from;
+    rec_to = from + frames;
+}
+
+/* Replays a recording `reps` times on the calling thread (drawing state of
+ * its core) and returns the microseconds per vblank of it; the VRAM it
+ * leaves is the recording's last frame. */
+uint32_t rt_gpu_bench(const uint32_t* rec, uint32_t words, int reps) {
+    if (words < 2 + VRAM_W * VRAM_H / 2 || rec[0] != 0x47504D54u) return 0;
+    if (!gpu_alloc()) return 0;
+    gpu_reset();
+    const uint32_t* e = rec + 2 + VRAM_W * VRAM_H / 2;
+    const uint32_t n = (words - (uint32_t)(e - rec)) / 2;
+    uint32_t vblanks = 0;
+    const int saved = timing_packets;
+    timing_packets = 0;
+    uint64_t total = 0;
+    for (int k = 0; k < reps; k++) {
+        memcpy(g_rt_vram, rec + 2, VRAM_W * VRAM_H * 2);
+        Draw_Reset();
+        Parser* p = &P[soft_core()];
+        memset(p, 0, sizeof *p);
+        p->ax1 = VRAM_W - 1;
+        p->ay1 = VRAM_H - 1;
+        const uint64_t t0 = plat_time_us();
+        for (uint32_t i = 0; i < n; i++) {
+            if (e[2 * i] == Q_GP0) gp0_exec(p, e[2 * i + 1]);
+            else if (e[2 * i] == Q_GP1) gp1_exec(p, e[2 * i + 1]);
+            else if (k == 0) vblanks++;
+        }
+        total += plat_time_us() - t0;
+    }
+    timing_packets = saved;
+    return vblanks ? (uint32_t)(total / (uint64_t)reps / vblanks) : 0;
+}
+
 void gpu_gp0(uint32_t w) {
+    rec_put(Q_GP0, w);
     if (async_on && ring) ring_push(Q_GP0, w);
     else gp0_exec(&P[0], w);
 }
@@ -644,6 +711,7 @@ void gpu_gp1(uint32_t w) {
     gp1_display(w);
     uint32_t c = (w >> 24) & 0x3F;
     if (c == 0x00 || c == 0x01 || c >= 0x10) {
+        rec_put(Q_GP1, w);
         if (async_on && ring) ring_push(Q_GP1, w);
         else gp1_exec(&P[0], w);
     }
@@ -653,6 +721,7 @@ void gpu_gp1(uint32_t w) {
 void gpu_present(void) {
     RtDisplay d;
     rt_gpu_display(&d);
+    rec_put(Q_VBLANK, 0);
     if (async_on && ring) {
         uint32_t v = (uint32_t)(d.x & 0x3FF) | ((uint32_t)(d.y & 0x1FF) << 10) |
                      ((uint32_t)(d.w & 0x3FF) << 19) | ((uint32_t)(d.h == 480) << 29) |

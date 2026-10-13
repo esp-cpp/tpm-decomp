@@ -234,6 +234,23 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--realtime")) rt_set_realtime(1);
         else if (!strcmp(argv[i], "--async-gpu")) async_gpu = 1;
         else if (!strcmp(argv[i], "--gpu-workers") && i + 1 < argc) async_gpu = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--gpu-record") && i + 3 < argc) {
+            /* --gpu-record FILE FROM FRAMES */
+            rt_gpu_record(argv[i + 1], (uint32_t)atoi(argv[i + 2]), (uint32_t)atoi(argv[i + 3]));
+            i += 3;
+        } else if (!strcmp(argv[i], "--gpu-bench") && i + 1 < argc) {
+            /* --gpu-bench FILE: replay a recording, print the time per vblank */
+            FILE* f = fopen(argv[i + 1], "rb");
+            if (!f) { perror(argv[i + 1]); return 1; }
+            fseek(f, 0, SEEK_END);
+            long n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            uint32_t* rec = malloc((size_t)n);
+            if (fread(rec, 1, (size_t)n, f) != (size_t)n) return 1;
+            fclose(f);
+            printf("[host] gpu bench: %u us per vblank\n", (unsigned)rt_gpu_bench(rec, (uint32_t)(n / 4), 5));
+            return 0;
+        }
         else if (!strcmp(argv[i], "--gpu-trace") && i + 1 < argc) rt_set_gpu_trace((uint32_t)atoi(argv[++i]));
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
             wav = fopen(argv[++i], "wb");

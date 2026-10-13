@@ -92,6 +92,11 @@ extern uint32_t g_rt_gpu_split, g_rt_gpu_barriers; /* two workers: telemetry */
 extern uint64_t g_rt_gpu_wait_us[2];
 
 void rt_gpu_display(RtDisplay* d);
+/* Record the GPU's command stream of vblanks [from, from + frames) to a file
+ * (with VRAM as it was at the start), and replay such a recording through
+ * the rasterizer: microseconds per vblank, the mean of `reps` runs. */
+void rt_gpu_record(const char* path, uint32_t from, uint32_t frames);
+uint32_t rt_gpu_bench(const uint32_t* rec, uint32_t words, int reps);
 extern uint16_t* g_rt_vram; /* 1024 x 512, allocated by rt_boot */
 
 uint32_t rt_frame_count(void);
