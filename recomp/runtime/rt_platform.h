@@ -89,6 +89,7 @@ void rt_gpu_set_async(int n);
 void rt_gpu_worker_n(volatile int* stop, int idx);
 void rt_gpu_worker(volatile int* stop);
 extern uint32_t g_rt_gpu_split, g_rt_gpu_barriers; /* two workers: telemetry */
+extern uint64_t g_rt_gpu_wait_us[2];
 
 void rt_gpu_display(RtDisplay* d);
 extern uint16_t* g_rt_vram; /* 1024 x 512, allocated by rt_boot */

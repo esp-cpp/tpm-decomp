@@ -125,6 +125,7 @@ static int nworkers;
 static int split = 120;
 static uint64_t busy_us[2], wait_us[2];
 uint32_t g_rt_gpu_split, g_rt_gpu_barriers; /* telemetry */
+uint64_t g_rt_gpu_wait_us[2];               /* each worker's time at rendezvous */
 
 static void apply_band(Parser* p) {
     if (nworkers != 2) {
@@ -159,7 +160,9 @@ static void barrier_(int counted) {
             break;
         }
     }
-    if (counted) wait_us[soft_core()] += plat_time_us() - t0; /* not work */
+    const uint64_t waited = plat_time_us() - t0;
+    if (counted) wait_us[soft_core()] += waited; /* not work */
+    g_rt_gpu_wait_us[soft_core()] += waited;
 }
 
 void rt_gpu_display(RtDisplay* d) {
