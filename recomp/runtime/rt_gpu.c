@@ -25,7 +25,9 @@ u16* g_rt_vram;
 #define SOFT_RASTER_NO_FALLBACK
 #define SOFT_CLUT_CACHE
 #ifdef ESP_PLATFORM
-#define SOFT_RASTER_RECIP /* RV32: no 64-bit divide (GCC nested function) */
+#define SOFT_RASTER_RECIP      /* RV32: no 64-bit divide (GCC nested function) */
+#define SOFT_RASTER_FLOAT_GRAD /* ...and the P4 has an FPU: gradients in float
+                                * (exact fix-up included; the MGS port's setting) */
 #endif
 /* the core's ESP32 diagnostics name the MGS port's VRAM: point them at ours */
 #define g_RawVram g_rt_vram
@@ -185,8 +187,16 @@ static void trace_packet(uint32_t c) {
     trace_prims = 0;
 }
 
+/* g_rt_prof.gpu: the drawing's time. On the worker, its busy spells (timed
+ * per ring drain: a clock read per packet cost the board ~1 us each);
+ * synchronously, per packet. */
 static void exec_packet_(void);
+static int timing_packets = 1;
 static void exec_packet(void) {
+    if (!timing_packets) {
+        exec_packet_();
+        return;
+    }
     uint64_t t0 = plat_time_us();
     exec_packet_();
     g_rt_prof.gpu += plat_time_us() - t0;
@@ -274,9 +284,9 @@ static void gp0_exec(uint32_t w) {
         xfer_buf[2 * xfer_pos + 1] = (uint16_t)(w >> 16);
         if (++xfer_pos >= xfer_words) {
             xfer_in = 0;
-            uint64_t t0 = plat_time_us();
+            uint64_t t0 = timing_packets ? plat_time_us() : 0;
             Draw_LoadImage(&xfer_rect, (u_long*)xfer_buf);
-            g_rt_prof.gpu += plat_time_us() - t0;
+            if (timing_packets) g_rt_prof.gpu += plat_time_us() - t0;
         }
         return;
     }
@@ -392,12 +402,19 @@ static void gpu_drain(void) {
 }
 
 void rt_gpu_worker(volatile int* stop) {
+    uint64_t busy_since = 0;
+    timing_packets = 0;
     while (!*stop) {
         uint32_t r = ring_r;
         if (r == ring_load(&ring_w)) {
+            if (busy_since) {
+                g_rt_prof.gpu += plat_time_us() - busy_since;
+                busy_since = 0;
+            }
             plat_gpu_idle();
             continue;
         }
+        if (!busy_since) busy_since = plat_time_us();
         uint32_t i = (r & (RING_ENTRIES - 1)) * 2;
         uint32_t kind = ring[i], v = ring[i + 1];
         if (kind == Q_GP0) {

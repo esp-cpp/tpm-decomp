@@ -651,6 +651,13 @@ ABI_IN = (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 28) | (1 << 29) | \
     (1 << 31)
 ABI_OUT = sum(1 << r for r in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
                                 15, 24, 25, 28, 29, 31, HI, LO))
+# Hand-written renderers that use $sp and $ra as data registers (so the
+# save / restore pattern is not visible) but whose public entry points keep
+# the calling convention: they give back $s0-$s7, $gp and $fp and do not
+# read them. (Their inner entries take $s0 and temporaries as inputs.)
+# Checked by --check / --poison.
+ASM_ABI = (0x80052618, 0x800545B4, 0x80055148)
+ASM_KEEP = (16, 17, 18, 19, 20, 21, 22, 23, 28, 30)
 SETJMP_IN = sum(1 << r for r in (16, 17, 18, 19, 20, 21, 22, 23, 28, 29, 30,
                                   31))
 
@@ -716,7 +723,7 @@ class RegFlow:
             return self.model[t][1]
         if t not in self.entry_of:
             return ALL
-        m = self.clobber[self.entry_of[t].start]
+        m = self.clobber.get(t, 0)
         if t in self.em.wrap:
             m |= ABI_OUT  # native code around the original
         return m
@@ -855,9 +862,25 @@ class RegFlow:
         return mask(i.reads), mask(i.writes)
 
     # ---- save / restore of callee-saved registers (single-entry only) ----
-    def find_saverestore(self, f):
-        if len(f.entries) != 1:
-            return {}
+    def reach_from(self, f, e):
+        """Indices of f's units reachable from entry e."""
+        units = self.units[f.start]
+        at = self.at[f.start]
+        if e not in at:
+            return set(range(len(units)))
+        seen = {at[e]}
+        work = [at[e]]
+        while work:
+            x = work.pop()
+            for y in units[x].succ:
+                if y not in seen:
+                    seen.add(y)
+                    work.append(y)
+        return seen
+
+    def find_saverestore(self, f, e, reach):
+        """{reg: prologue store pc} for the registers entry e saves in its
+        prologue and every exit reachable from it restores."""
         units = self.units[f.start]
         insns = self.insns
         labels = f.labels
@@ -866,11 +889,11 @@ class RegFlow:
         store_pc = {}
         written = set()
         delta = 0
-        a = f.start
+        a = e
         in_slot = False
         while a in insns.reach and a < f.end:
             i = insns[a]
-            if a != f.start and a in labels:
+            if a != e and a in labels:
                 break
             if i.kind != "op":
                 if in_slot:
@@ -895,7 +918,8 @@ class RegFlow:
             return {}
         # every exit restores the register from the same slot, straight-line
         ok = dict(slots)
-        for u in units:
+        for x in reach:
+            u = units[x]
             if not u.exits:
                 continue
             if any(e[0] == "all" for e in u.exits):
@@ -949,8 +973,25 @@ class RegFlow:
         em = self.em
         for f in self.funcs:
             self.build(f)
+        self.reach = {}
+        self.sr_entry = {}
+        self.skip_pcs = {}
         for f in self.funcs:
-            self.saverestore[f.start] = self.find_saverestore(f)
+            sr = {}
+            skip = {}
+            for e in f.entries:
+                self.reach[e] = self.reach_from(f, e)
+                if e in ASM_ABI:
+                    self.sr_entry[e] = {r: None for r in ASM_KEEP}
+                else:
+                    self.sr_entry[e] = self.find_saverestore(f, e,
+                                                             self.reach[e])
+                sr.update(self.sr_entry[e])
+                for r, pc in self.sr_entry[e].items():
+                    if pc is not None:
+                        skip[pc] = r
+            self.saverestore[f.start] = sr
+            self.skip_pcs[f.start] = skip
         for f in self.funcs:
             stub = self.bios_stub(f)
             if stub:
@@ -976,41 +1017,45 @@ class RegFlow:
 
     def fix_clobber(self):
         for f in self.funcs:
-            self.clobber[f.start] = 0
+            for e in f.entries:
+                self.clobber[e] = 0
         changed = True
         rounds = 0
         while changed:
             changed = False
             rounds += 1
             for f in self.funcs:
-                m = 0
-                tails = 0
-                for u in self.units[f.start]:
-                    m |= u.defs | u.slot_defs
-                    if u.kind in ("jal", "condcall"):
-                        m |= 1 << RA
-                        m |= self.clobber_of(u.callee) if u.callee is not None \
-                            else ALL
-                    elif u.kind == "jalr":
-                        m |= self.ind_clobber
-                    elif u.kind == "op" and u.uses & (1 << 4) and \
-                            self.insns[u.pc].kind == "trap":
-                        m |= 1 << 2
-                    for e in u.exits:
-                        if e[0] == "all":
-                            tails |= ALL
-                        elif e[0] == "ind":
-                            tails |= self.ind_clobber
-                        elif e[0] == "tail":
-                            tails |= self.clobber_of(e[1])
-                for r in self.saverestore[f.start]:
-                    m &= ~(1 << r)
-                m |= tails
-                if f.start in self.model:
-                    m = self.model[f.start][1]
-                if m != self.clobber[f.start]:
-                    self.clobber[f.start] = m
-                    changed = True
+                units = self.units[f.start]
+                for ent in f.entries:
+                    m = 0
+                    tails = 0
+                    for x in self.reach[ent]:
+                        u = units[x]
+                        m |= u.defs | u.slot_defs
+                        if u.kind in ("jal", "condcall"):
+                            m |= 1 << RA
+                            m |= self.clobber_of(u.callee) \
+                                if u.callee is not None else ALL
+                        elif u.kind == "jalr":
+                            m |= self.ind_clobber
+                        elif u.kind == "op" and u.uses & (1 << 4) and \
+                                self.insns[u.pc].kind == "trap":
+                            m |= 1 << 2
+                        for e in u.exits:
+                            if e[0] == "all":
+                                tails |= ALL
+                            elif e[0] == "ind":
+                                tails |= self.ind_clobber
+                            elif e[0] == "tail":
+                                tails |= self.clobber_of(e[1])
+                    for r in self.sr_entry[ent]:
+                        m &= ~(1 << r)
+                    m |= tails
+                    if ent in self.model:
+                        m = self.model[ent][1]
+                    if m != self.clobber[ent]:
+                        self.clobber[ent] = m
+                        changed = True
             ind = 0
             for t in self.indirect:
                 ind |= self.clobber_of(t)
@@ -1037,8 +1082,7 @@ class RegFlow:
         f's callers' needs at its exits."""
         units = self.units[f.start]
         exitlive = 0 if need else self.exitlive[f.start]
-        sr = self.saverestore[f.start]
-        skip_use = {pc: r for r, pc in sr.items()}
+        skip_use = self.skip_pcs[f.start]
         live = [0] * len(units)
         changed = True
         while changed:
@@ -1058,25 +1102,28 @@ class RegFlow:
                     else:
                         out |= ALL
                 k = u.kind
+                slot_uses = u.slot_uses
+                if k != "op" and u.pc + 4 in skip_use:
+                    slot_uses &= ~(1 << skip_use[u.pc + 4])  # a save in a delay slot
                 if k == "op":
                     uses = u.uses
                     if u.pc in skip_use:
                         uses &= ~(1 << skip_use[u.pc])
                     li = uses | (out & ~u.defs)
                 elif k in ("branch", "jump", "ret", "jr"):
-                    li = u.uses | u.slot_uses | (out & ~u.slot_defs)
+                    li = u.uses | slot_uses | (out & ~u.slot_defs)
                 elif k == "jal":
                     ra = 1 << RA
                     call = (self.livein_of(u.callee) & ~ra) | (out & ~ra) \
                         if u.callee is not None else ALL
-                    li = u.slot_uses | (call & ~u.slot_defs)
+                    li = slot_uses | (call & ~u.slot_defs)
                 elif k == "condcall":
                     ra = 1 << RA
                     call = (self.livein_of(u.callee) & ~ra) | (out & ~ra)
-                    li = u.uses | u.slot_uses | ((call | out) & ~u.slot_defs)
+                    li = u.uses | slot_uses | ((call | out) & ~u.slot_defs)
                 elif k == "jalr":
                     call = (self.ind_livein & ~u.defs) | (out & ~u.defs)
-                    li = u.uses | u.slot_uses | (call & ~u.slot_defs)
+                    li = u.uses | slot_uses | (call & ~u.slot_defs)
                 elif k == "dead":
                     li = 0
                 else:
@@ -1109,6 +1156,8 @@ class RegFlow:
                 at = self.at[f.start]
                 for e in f.entries:
                     li = live[at[e]] if e in at else ALL
+                    if e in ASM_ABI:
+                        li &= ~mask(ASM_KEEP)  # saved, not read
                     if self.livein.get(e) != li:
                         self.livein[e] = li
                         changed = True
@@ -1160,7 +1209,10 @@ class RegFlow:
         changed by one)."""
         start = f.start
         el = self.exitlive[start]
-        m = self.clobber[start] & el
+        clob = 0
+        for e in f.entries:
+            clob |= self.clobber_of(e)
+        m = clob & el
         sr = self.saverestore[start]
         if sr:
             touched = 0
@@ -1206,8 +1258,9 @@ def fname(a):
 
 class Emitter:
     def __init__(self, prog, insns, funcs, names, taken=(), special=(),
-                 poison=False):
+                 poison=False, check=False):
         self.prog = prog
+        self.check = check
         self.taken = set(taken)
         self.special = set(special)
         self.poison = poison
@@ -1357,10 +1410,24 @@ class Emitter:
             return self.sync_out(), self.sync_in()
         out, inn = r
         before = self.sync_out_mask(out)
+        if self.check:
+            if pc in self.flow.call_ind:
+                clob = self.flow.ind_clobber
+            else:
+                clob = self.flow.clobber_of(self.flow.call_target[pc])
+            keep = ALL & ~clob
+            inn_c = self.sync_in_mask(inn)
+            return (before + "{ Cpu s_ = g_cpu; ",
+                    "rt_clobber_check(&s_, 0x%XULL, 0x%08Xu); } %s" % (keep, pc, inn_c))
         if self.poison:
+            # only what this function may hand back changed: its return does
+            # not rewrite the registers it preserves
+            mine = 0
+            for e in self.f.entries:
+                mine |= self.flow.clobber_of(e)
             before += "".join("g_cpu.r[%d] = 0xDEAD%04Xu; " % (x, x)
                               for x in self.written
-                              if not out >> x & 1 and x != SP)
+                              if not out >> x & 1 and x != SP and mine >> x & 1)
         return before, self.sync_in_mask(inn)
 
     def sync_out(self):
@@ -1517,6 +1584,9 @@ def main():
     ap.add_argument("--disc", help="raw .bin image: also recompile the overlays")
     ap.add_argument("--full-sync", action="store_true",
                     help="pass every register at every call (no analysis)")
+    ap.add_argument("--check", action="store_true",
+                    help="check the analysis: registers a callee is assumed "
+                         "to leave alone must be unchanged in g_cpu after it")
     ap.add_argument("--poison", action="store_true",
                     help="check the analysis: registers a call does not pass "
                          "are overwritten in g_cpu before it")
@@ -1572,7 +1642,8 @@ def main():
     # flood fill decoded as code)
     fstarts = {e for f in funcs for e in f.entries}
     ptrs = {i.w for i in insns.values() if i.w in fstarts}
-    em = Emitter(prog, insns, funcs, names, taken | ptrs, special, args.poison)
+    em = Emitter(prog, insns, funcs, names, taken | ptrs, special, args.poison,
+                 args.check)
     if not args.full_sync:
         em.flow = RegFlow(em)
         em.flow.run()

@@ -142,6 +142,22 @@ void rt_jump_ind(uint32_t t, uint32_t pc) {
     rt_jump(t, pc);
 }
 
+/* tools/recomp.py --check: the registers in `keep` must come back from the
+ * call at pc as they went in */
+void rt_clobber_check(const Cpu* before, unsigned long long keep, uint32_t pc) {
+    static int reported;
+    for (int r = 1; r < 34; r++) {
+        if (!(keep >> r & 1)) continue;
+        uint32_t a = r < 32 ? before->r[r] : r == 32 ? before->hi : before->lo;
+        uint32_t b = r < 32 ? g_cpu.r[r] : r == 32 ? g_cpu.hi : g_cpu.lo;
+        if (a != b && reported < 40) {
+            reported++;
+            printf("[recomp] call at %08X changed r%d (%08X -> %08X), assumed kept\n",
+                   (unsigned)pc, r, (unsigned)a, (unsigned)b);
+        }
+    }
+}
+
 void rt_fallthrough(uint32_t t) {
     rt_fatal("fell through into %08X, not a function", (unsigned)t);
 }
