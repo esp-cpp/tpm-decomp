@@ -30,6 +30,9 @@ u16* g_rt_vram;
 #ifdef ESP_PLATFORM
 #define SOFT_CLUT_CACHE /* per core there; the desktop's would be shared */
 #else
+#ifdef RT_HOST_CLUT_CACHE
+#define SOFT_CLUT_CACHE /* (testing the board's path; one worker) */
+#endif
 #define SOFT_RASTER_HOST_CORES /* two workers on threads: per-thread state */
 __thread int psyz_host_core;
 #endif
@@ -89,7 +92,8 @@ void Draw_Reset(void) {
 static void gpu_drain(void);
 #define RING_ENTRIES (1u << 16)
 static uint32_t* ring;             /* the async queue: [kind, value] pairs */
-static uint32_t ring_w, ring_r[2]; /* entries; producer / each worker */
+static uint32_t ring_w, ring_r[2]; /* entries; producer / each worker (published) */
+static uint32_t ring_r_local[2];   /* each worker's own position */
 static int async_on;               /* 0: drawing on the CPU's thread; 1, 2 workers */
 static volatile int prod_wait;     /* the CPU's thread waits for ring space */
 
@@ -606,9 +610,11 @@ void rt_gpu_worker_n(volatile int* stop, int idx) {
     uint64_t busy_since = 0;
     timing_packets = 0;
     apply_band(p);
+    ring_r_local[idx] = ring_r[idx];
     while (!*stop) {
-        uint32_t r = ring_r[idx];
+        uint32_t r = ring_r_local[idx];
         if (r == ring_load(&ring_w)) {
+            if (ring_r[idx] != r) __atomic_store_n(&ring_r[idx], r, __ATOMIC_RELEASE);
             if (busy_since) {
                 uint64_t d = plat_time_us() - busy_since;
                 busy_us[idx] += d;
@@ -635,8 +641,15 @@ void rt_gpu_worker_n(volatile int* stop, int idx) {
             vblank_marker(kind, v);
             busy_since = plat_time_us();
         }
-        __atomic_store_n(&ring_r[idx], r + 1, __ATOMIC_RELEASE);
-        if (prod_wait && (r & 1023) == 0) plat_gpu_wake_producer();
+        /* the read position is published every 32 entries (a release store
+         * is a fence on this core: one per word cost the GPU worker ~3%), and
+         * whenever the ring runs dry or a rendezvous / vblank passed */
+        r++;
+        ring_r_local[idx] = r;
+        if ((r & 31) == 0 || kind == Q_VBLANK || r == ring_load(&ring_w)) {
+            __atomic_store_n(&ring_r[idx], r, __ATOMIC_RELEASE);
+            if (prod_wait && (r & 1023) < 32) plat_gpu_wake_producer();
+        }
     }
 }
 void rt_gpu_worker(volatile int* stop) { rt_gpu_worker_n(stop, 1); }
