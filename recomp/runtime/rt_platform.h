@@ -97,6 +97,7 @@ void rt_gpu_display(RtDisplay* d);
  * the rasterizer: microseconds per vblank, the mean of `reps` runs. */
 void rt_gpu_record(const char* path, uint32_t from, uint32_t frames);
 uint32_t rt_gpu_bench(const uint32_t* rec, uint32_t words, int reps);
+void rt_gpu_bench_mode(int skip); /* 1: no span pixels, 2: triangle setup only, 3: no triangles */
 extern uint16_t* g_rt_vram; /* 1024 x 512, allocated by rt_boot */
 
 uint32_t rt_frame_count(void);

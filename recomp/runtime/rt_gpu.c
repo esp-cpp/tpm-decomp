@@ -676,6 +676,7 @@ void rt_gpu_record(const char* path, uint32_t from, uint32_t frames) {
 /* Replays a recording `reps` times on the calling thread (drawing state of
  * its core) and returns the microseconds per vblank of it; the VRAM it
  * leaves is the recording's last frame. */
+void rt_gpu_bench_mode(int skip) { psyz_bench_skip = skip; }
 uint32_t rt_gpu_bench(const uint32_t* rec, uint32_t words, int reps) {
     if (words < 2 + VRAM_W * VRAM_H / 2 || rec[0] != 0x47504D54u) return 0;
     if (!gpu_alloc()) return 0;
