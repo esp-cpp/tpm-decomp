@@ -35,6 +35,10 @@ uint64_t plat_time_us(void);
 void* plat_alloc(uint32_t size);
 void plat_free(void* p);
 
+/* Real time only: the game is this far ahead of the wall clock; sleep (about
+ * that long; less is fine). */
+void plat_sleep_us(uint32_t us);
+
 /* Called on the game's thread while a pause is requested (rt_pause(1)):
  * block until it is lifted. */
 void plat_pause_wait(void);
@@ -51,8 +55,9 @@ void rt_request_exit(void);
 /* Pause the game's thread at its next poll (it calls plat_pause_wait()), or
  * let it go again; time does not advance while paused. */
 void rt_pause(int on);
-/* 1: emulated time follows the host clock (the board); 0: emulated time
- * advances with the work done (deterministic, as fast as the host can). */
+/* Emulated time advances with the work done (deterministic). 0: as fast as
+ * the host can; 1: no faster than real time (the board), slower when the
+ * host cannot keep up. */
 void rt_set_realtime(int on);
 
 typedef struct {
@@ -65,6 +70,8 @@ void rt_gpu_display(RtDisplay* d);
 extern uint16_t* g_rt_vram; /* 1024 x 512, allocated by rt_boot */
 
 uint32_t rt_frame_count(void);
+/* Debug: log the GPU state commands of one frame (vblank number). */
+void rt_set_gpu_trace(uint32_t frame);
 
 #ifdef __cplusplus
 }

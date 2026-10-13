@@ -11,6 +11,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 #include <time.h>
 
@@ -36,6 +37,7 @@ int plat_read_sector(uint32_t lba, uint8_t* out) {
 uint32_t plat_disc_sectors(void) { return disc_sectors; }
 void* plat_alloc(uint32_t size) { return calloc(1, size); }
 void plat_free(void* p) { free(p); }
+void plat_sleep_us(uint32_t us) { usleep(us); }
 void plat_pause_wait(void) {}
 
 static FILE* wav;
@@ -212,7 +214,7 @@ static uint16_t parse_buttons(const char* s) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN]\n", argv[0]);
+        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--realtime]\n", argv[0]);
         return 2;
     }
     for (int i = 3; i < argc; i++) {
@@ -220,6 +222,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--dump") && i + 1 < argc) dump_dir = argv[++i];
         else if (!strcmp(argv[i], "--every") && i + 1 < argc) every = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--vram")) dump_vram = 1;
+        else if (!strcmp(argv[i], "--realtime")) rt_set_realtime(1);
+        else if (!strcmp(argv[i], "--gpu-trace") && i + 1 < argc) rt_set_gpu_trace((uint32_t)atoi(argv[++i]));
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
             wav = fopen(argv[++i], "wb");
             if (wav) fseek(wav, 44, SEEK_SET);

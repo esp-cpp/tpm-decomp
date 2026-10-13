@@ -32,6 +32,12 @@ u16* g_rt_vram;
 #include "platform/soft_raster.inc.c"
 #undef g_RawVram
 
+#ifdef ESP_PLATFORM
+/* One rasterizer worker here: nothing to wait for before a primitive that
+ * samples the frame buffer (MGS's two workers rendezvous in libgpu.c) */
+void Psyz_GpuBarrier(void) {}
+#endif
+
 /* telemetry symbols the rasterizer core references */
 unsigned sotn_prim_cycles;
 unsigned sotn_prim_census[8];
@@ -148,8 +154,30 @@ static void draw_line(uint32_t c0, uint32_t xy0, uint32_t c1, uint32_t xy1, int 
     Draw_PushPrim(pk, 4);
 }
 
+/* rt_set_gpu_trace(n): log the state commands of frame n, with the number of
+ * primitives between them (comparing a board against the desktop) */
+static uint32_t trace_frame = 0xFFFFFFFFu, trace_prims;
+void rt_set_gpu_trace(uint32_t frame) { trace_frame = frame; }
+static void trace_packet(uint32_t c) {
+    if (rt_frame_count() != trace_frame) return;
+    if (c >= 0x20 && c < 0x80) {
+        if (trace_prims++ < 6 && c < 0x40) {
+            printf("[gpu] f%u prim", (unsigned)trace_frame);
+            for (int i = 0; i < cmd_len; i++) printf(" %08X", (unsigned)cmd[i]);
+            printf(" | ofs %d,%d clip %d..%d\n", st.ox, st.oy, st.y0, st.y1);
+        }
+        return;
+    }
+    printf("[gpu] f%u +%u prims | %02X %08X %08X %08X | band %d..%d area %d..%d clip %d..%d\n",
+           (unsigned)trace_frame, (unsigned)trace_prims, (unsigned)c, (unsigned)cmd[0],
+           (unsigned)(cmd_len > 1 ? cmd[1] : 0), (unsigned)(cmd_len > 2 ? cmd[2] : 0),
+           st.band_y0, st.band_y1, st.area_y0, st.area_y1, st.y0, st.y1);
+    trace_prims = 0;
+}
+
 static void exec_packet(void) {
     uint32_t c = cmd[0] >> 24;
+    trace_packet(c);
     if (c >= 0x20 && c < 0x80) {
         u_long pk[16];
         for (int i = 0; i < cmd_len; i++) pk[i] = cmd[i];

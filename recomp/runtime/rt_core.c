@@ -150,7 +150,15 @@ void rt_invalid(uint32_t pc, uint32_t insn) {
  * return point (made a function entry by recomp_entries), and
  * ReturnFromException a host longjmp back to rt_take_irq. */
 static uint32_t hook_buf;
-static jmp_buf irq_jb;
+/* Jump buffers with room to spare: the ESP32-P4's ROM setjmp (which the
+ * firmware links) stores more than newlib's jmp_buf declares, and ran over
+ * into the next statics (g_ram among them). */
+typedef struct {
+    jmp_buf jb;
+    uint8_t spare[128];
+} RtJmpBuf;
+static RtJmpBuf irq_jbuf;
+#define irq_jb (irq_jbuf.jb)
 static int in_irq;
 
 void rt_set_hook(uint32_t buf) { hook_buf = buf; }
@@ -219,8 +227,24 @@ void rt_set_realtime(int on) {
     rt_epoch_us = plat_time_us() - (uint64_t)(g_now / 33.8688);
 }
 
+#define THROTTLE_SLACK_US 2000 /* ahead by this much: sleep */
+#define THROTTLE_LAG_US 50000  /* behind by more: forget the debt */
+static void rt_throttle(void) {
+    static uint32_t n;
+    if (++n & 63) return; /* every 64 polls is plenty */
+    int64_t emu_us = (int64_t)(g_now / 33.8688);
+    int64_t wall_us = (int64_t)(plat_time_us() - rt_epoch_us);
+    int64_t ahead = emu_us - wall_us;
+    if (ahead > THROTTLE_SLACK_US) {
+        plat_sleep_us((uint32_t)ahead);
+    } else if (ahead < -THROTTLE_LAG_US) {
+        rt_epoch_us += (uint64_t)(-ahead - THROTTLE_LAG_US);
+    }
+}
+
 static volatile int exit_requested, pause_requested;
-static jmp_buf boot_jb;
+static RtJmpBuf boot_jbuf;
+#define boot_jb (boot_jbuf.jb)
 void rt_request_exit(void) { exit_requested = 1; }
 void rt_pause(int on) { pause_requested = on; }
 
@@ -232,19 +256,21 @@ void rt_poll(void) {
         if (exit_requested) longjmp(boot_jb, 1);
         rt_set_realtime(realtime); /* the pause took no emulated time */
     }
-    if (realtime) {
-        uint64_t t = (uint64_t)((plat_time_us() - rt_epoch_us) * 33.8688);
-        g_now = t > g_now ? t : g_now + POLL_EDGES;
-    } else {
-        g_now += POLL_EDGES * CYCLES_PER_EDGE;
-    }
+    /* Emulated time always advances with the work done: jumping it to the
+     * wall clock when the host falls behind lets several vblanks' worth of
+     * hblanks pass at once, which libetc's VSync takes for a hang ("VSync:
+     * timeout") and the game did not survive. In real time the clock only
+     * throttles: ahead of the wall clock it waits; behind, it lets the game
+     * run slow instead of catching up. */
+    g_now += POLL_EDGES * CYCLES_PER_EDGE;
+    if (realtime) rt_throttle();
     hw_update();
     rt_check_irq();
 }
 
 /* Waits the BIOS would spend: advance time explicitly */
 void rt_idle(uint32_t cycles) {
-    if (!realtime) g_now += cycles;
+    g_now += cycles;
     hw_update();
 }
 
