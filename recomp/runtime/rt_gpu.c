@@ -29,6 +29,8 @@ u16* g_rt_vram;
 #define SOFT_RASTER_NO_FALLBACK
 #ifdef ESP_PLATFORM
 #define SOFT_CLUT_CACHE /* per core there; the desktop's would be shared */
+/* in PSRAM: cached PSRAM measured faster for the cores than internal RAM */
+#define SOFT_CLUT_CACHE_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #else
 #ifdef RT_HOST_CLUT_CACHE
 #define SOFT_CLUT_CACHE /* (testing the board's path; one worker) */

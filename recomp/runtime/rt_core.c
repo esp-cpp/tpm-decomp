@@ -11,11 +11,9 @@
 
 /* The state every generated function touches: kept in the board's internal
  * RAM (a .data section; the platform may send .bss to slower memory) */
-#ifdef ESP_PLATFORM
-#define RT_HOT __attribute__((section(".data.rt_hot")))
-#else
+/* (internal RAM measured slower than cached PSRAM for the P4's cores: these
+ * stay in the bundle's .bss, which goes to PSRAM) */
 #define RT_HOT
-#endif
 RT_HOT Cpu g_cpu;
 int g_trace;
 #ifdef RT_DEBUG

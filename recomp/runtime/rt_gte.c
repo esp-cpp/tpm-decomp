@@ -2,11 +2,9 @@
  * (libgte.c), result for result: RT_GTE_CHECK builds compare the two. */
 #include "rt_gte.h"
 
-#ifdef ESP_PLATFORM
-#define RT_HOT __attribute__((section(".data.rt_hot")))
-#else
+/* (internal RAM measured slower than cached PSRAM for the P4's cores: these
+ * stay in the bundle's .bss, which goes to PSRAM) */
 #define RT_HOT
-#endif
 RT_HOT RtGte g_gte;
 
 #define FLAG_MAC1_OVF_POS (1u << 30)
