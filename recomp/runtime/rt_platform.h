@@ -8,15 +8,30 @@
 extern "C" {
 #endif
 
+typedef struct {
+    int x, y;    /* top-left in VRAM, in 16-bit units */
+    int w, h;    /* pixels */
+    int rgb24;   /* 24-bit display mode */
+    int enabled;
+} RtDisplay;
+
 /* One raw 2352-byte sector of the disc (LBA 0 = 00:02:00). Returns 0 on
  * success. */
 int plat_read_sector(uint32_t lba, uint8_t* out);
 /* Sectors on the disc. */
 uint32_t plat_disc_sectors(void);
 
-/* Called at every emulated vertical blank, on the game's thread: present the
- * display (rt_gpu_display / g_rt_vram) and sample input. */
+/* Called at every emulated vertical blank, on the game's thread (input,
+ * pacing). */
 void plat_vblank(void);
+/* Then, once the drawing queued before that vblank is in VRAM: present `d`
+ * from g_rt_vram. On the game's thread, or on the GPU worker's with
+ * rt_gpu_set_async(1). */
+void plat_display_ready(const RtDisplay* d);
+/* rt_gpu_set_async(1) only: wake the GPU worker / wait a little (the worker
+ * when idle, the game's thread when the queue is full or draining). */
+void plat_gpu_kick(void);
+void plat_gpu_idle(void);
 
 /* Pad buttons for port 0/1, PlayStation bit layout, 1 = pressed:
  * 0 select, 3 start, 4 up, 5 right, 6 down, 7 left, 8 L2, 9 R2, 10 L1,
@@ -59,17 +74,25 @@ void rt_pause(int on);
  * the host can; 1: no faster than real time (the board), slower when the
  * host cannot keep up. */
 void rt_set_realtime(int on);
+/* Before rt_boot: run the GPU's command stream on another thread, which the
+ * platform gives to rt_gpu_worker(&stop) (returns once *stop is set). */
+void rt_gpu_set_async(int on);
+void rt_gpu_worker(volatile int* stop);
 
-typedef struct {
-    int x, y;    /* top-left in VRAM, in 16-bit units */
-    int w, h;    /* pixels */
-    int rgb24;   /* 24-bit display mode */
-    int enabled;
-} RtDisplay;
 void rt_gpu_display(RtDisplay* d);
 extern uint16_t* g_rt_vram; /* 1024 x 512, allocated by rt_boot */
 
 uint32_t rt_frame_count(void);
+
+/* Where the game thread's time went, in microseconds since boot. */
+typedef struct {
+    uint64_t gpu;    /* GP0 packets: the rasterizer, VRAM transfers */
+    uint64_t spu;    /* SPU emulation (sample generation) */
+    uint64_t cd;     /* sector reads */
+    uint64_t vblank; /* plat_vblank */
+    uint64_t sleep;  /* real time: waiting for the wall clock */
+} RtProf;
+extern RtProf g_rt_prof;
 /* Debug: log the GPU state commands of one frame (vblank number). */
 void rt_set_gpu_trace(uint32_t frame);
 

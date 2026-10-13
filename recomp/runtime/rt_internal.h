@@ -38,6 +38,7 @@ enum { IRQ_VBLANK = 0, IRQ_GPU = 1, IRQ_CDROM = 2, IRQ_DMA = 3, IRQ_TMR0 = 4,
 void gpu_reset(void);
 int gpu_alloc(void);
 void gpu_free(void);
+void gpu_present(void);
 void gpu_gp0(uint32_t w);
 void gpu_gp1(uint32_t w);
 uint32_t gpu_read(void);

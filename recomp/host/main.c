@@ -14,12 +14,13 @@
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "rt_platform.h"
 
 static FILE* disc;
 static uint32_t disc_sectors;
-static int max_frames = 600, every = 30, dump_vram;
+static int max_frames = 600, every = 30, dump_vram, async_gpu;
 static const char* dump_dir;
 
 typedef struct {
@@ -38,6 +39,10 @@ uint32_t plat_disc_sectors(void) { return disc_sectors; }
 void* plat_alloc(uint32_t size) { return calloc(1, size); }
 void plat_free(void* p) { free(p); }
 void plat_sleep_us(uint32_t us) { usleep(us); }
+void plat_gpu_kick(void) {}
+void plat_gpu_idle(void) { usleep(20); }
+static volatile int gpu_stop;
+static void* gpu_thread(void* arg) { (void)arg; rt_gpu_worker(&gpu_stop); return NULL; }
 void plat_pause_wait(void) {}
 
 static FILE* wav;
@@ -140,10 +145,8 @@ static void write_png(const char* path, const uint8_t* rgb, int w, int h) {
     free(z);
 }
 
-static void dump(uint32_t frame) {
+static void dump(uint32_t frame, RtDisplay d) {
     char path[512];
-    RtDisplay d;
-    rt_gpu_display(&d);
     int w, h;
     uint8_t* rgb;
     if (dump_vram) {
@@ -184,11 +187,15 @@ static void dump(uint32_t frame) {
            d.x, d.y, d.rgb24 ? " 24-bit" : "", d.enabled ? "" : " (off)", path);
 }
 
-void plat_vblank(void) {
-    uint32_t f = rt_frame_count();
-    if (dump_dir && f % (uint32_t)every == 0) dump(f);
+void plat_vblank(void) {}
+
+/* frames are counted (and dumped) here: with --async-gpu this runs on the GPU
+ * thread, after the drawing of the frame */
+void plat_display_ready(const RtDisplay* d) {
+    static uint32_t f;
+    f++;
+    if (dump_dir && (f % (uint32_t)every == 0 || (int)f >= max_frames)) dump(f, *d);
     if ((int)f >= max_frames) {
-        if (dump_dir) dump(f);
         if (wav) wav_header();
 #ifdef RT_DEBUG
         extern int g_shadow_max;
@@ -214,7 +221,7 @@ static uint16_t parse_buttons(const char* s) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--realtime]\n", argv[0]);
+        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--realtime] [--async-gpu]\n", argv[0]);
         return 2;
     }
     for (int i = 3; i < argc; i++) {
@@ -223,6 +230,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--every") && i + 1 < argc) every = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--vram")) dump_vram = 1;
         else if (!strcmp(argv[i], "--realtime")) rt_set_realtime(1);
+        else if (!strcmp(argv[i], "--async-gpu")) async_gpu = 1;
         else if (!strcmp(argv[i], "--gpu-trace") && i + 1 < argc) rt_set_gpu_trace((uint32_t)atoi(argv[++i]));
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
             wav = fopen(argv[++i], "wb");
@@ -250,6 +258,11 @@ int main(int argc, char** argv) {
     fseek(disc, 0, SEEK_END);
     disc_sectors = (uint32_t)(ftell(disc) / 2352);
     setvbuf(stdout, NULL, _IOLBF, 0);
+    if (async_gpu) {
+        pthread_t t;
+        rt_gpu_set_async(1);
+        pthread_create(&t, NULL, gpu_thread, NULL);
+    }
     rt_boot(exe, (uint32_t)n);
     rt_shutdown();
     return 0;

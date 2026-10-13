@@ -200,7 +200,10 @@ static void command(uint8_t c) {
 }
 
 static void read_sector(void) {
-    if (plat_read_sector(cur_lba, sector)) {
+    uint64_t t0 = plat_time_us();
+    int rd = plat_read_sector(cur_lba, sector);
+    g_rt_prof.cd += plat_time_us() - t0;
+    if (rd) {
         memset(sector, 0, sizeof sector);
         RT_LOG("cd: read error at %u", (unsigned)cur_lba);
     }

@@ -9,7 +9,14 @@
 #include "rt_internal.h"
 #include "rt_platform.h"
 
-Cpu g_cpu;
+/* The state every generated function touches: kept in the board's internal
+ * RAM (a .data section; the platform may send .bss to slower memory) */
+#ifdef ESP_PLATFORM
+#define RT_HOT __attribute__((section(".data.rt_hot")))
+#else
+#define RT_HOT
+#endif
+RT_HOT Cpu g_cpu;
 int g_trace;
 #ifdef RT_DEBUG
 uint32_t g_shadow[256];
@@ -35,7 +42,7 @@ const char* rt_where(void) {
     return "";
 #endif
 }
-uint8_t* g_ram;
+RT_HOT uint8_t* g_ram;
 
 /* ---- names, for logs ---- */
 const char* rt_name(uint32_t a) {
@@ -221,6 +228,7 @@ void rt_check_irq(void) {
 static int realtime;
 static uint64_t rt_epoch_us;
 uint64_t g_now;
+RtProf g_rt_prof;
 
 void rt_set_realtime(int on) {
     realtime = on;
@@ -236,7 +244,9 @@ static void rt_throttle(void) {
     int64_t wall_us = (int64_t)(plat_time_us() - rt_epoch_us);
     int64_t ahead = emu_us - wall_us;
     if (ahead > THROTTLE_SLACK_US) {
+        uint64_t t0 = plat_time_us();
         plat_sleep_us((uint32_t)ahead);
+        g_rt_prof.sleep += plat_time_us() - t0;
     } else if (ahead < -THROTTLE_LAG_US) {
         rt_epoch_us += (uint64_t)(-ahead - THROTTLE_LAG_US);
     }

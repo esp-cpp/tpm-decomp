@@ -157,6 +157,8 @@ static uint16_t spu_read(uint32_t off) { return Psyz_SpuRead(off); }
 static void spu_update(void) {
     uint64_t due = g_now * SPU_HZ / CPU_HZ;
     static short buf[2 * 256];
+    if (spu_frames + 64 > due) goto irq;
+    uint64_t t0 = plat_time_us();
     while (spu_frames + 64 <= due) {
         int n = (int)(due - spu_frames);
         if (n > 256) n = 256;
@@ -164,6 +166,8 @@ static void spu_update(void) {
         plat_audio(buf, n);
         spu_frames += (uint64_t)n;
     }
+    g_rt_prof.spu += plat_time_us() - t0;
+irq:
     if (psyz_pending_spu_irq > 0) {
         psyz_pending_spu_irq = 0;
         hw_irq(IRQ_SPU);
@@ -340,7 +344,10 @@ void hw_update(void) {
         hw_irq(IRQ_VBLANK);
         gpu_vblank();
         hle_vblank();
+        uint64_t t0 = plat_time_us();
         plat_vblank();
+        gpu_present();
+        g_rt_prof.vblank += plat_time_us() - t0;
     }
     cd_update();
     spu_update();

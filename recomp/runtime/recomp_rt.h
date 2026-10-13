@@ -33,36 +33,44 @@ void mem_write_slow(uint32_t a, uint32_t v, int size);
 
 #if defined(__GNUC__)
 #define RT_LIKELY(x) __builtin_expect(!!(x), 1)
+/* (always_inline measured no faster on the board and doubled the code) */
+#define RT_INLINE static inline
 #else
 #define RT_LIKELY(x) (x)
+#define RT_INLINE static inline
 #endif
+/* Guest loads and stores are aligned (the R3000 traps otherwise; LWL/LWR
+ * work byte-wise), so they are plain typed accesses: through memcpy an RV32
+ * compiler cannot assume alignment and calls the library. */
+#define RAM32(o) (*(uint32_t*)(g_ram + (o)))
+#define RAM16(o) (*(uint16_t*)(g_ram + (o)))
 
 /* Where a guest address lands in g_ram, or -1 for I/O / unmapped. KUSEG,
  * KSEG0 and KSEG1 all see the same 2 MB (mirrored over 8 MB). */
-static inline int32_t ram_off(uint32_t a) {
+RT_INLINE int32_t ram_off(uint32_t a) {
     uint32_t p = a & 0x1FFFFFFFu;
     if (RT_LIKELY(p < 0x00800000u)) return (int32_t)(p & (RAM_SIZE - 1));
     if ((p & 0xFFFFFC00u) == 0x1F800000u) return (int32_t)(SCRATCH_OFF + (p & 0x3FFu));
     return -1;
 }
 
-static inline uint32_t LW(uint32_t a) {
+RT_INLINE uint32_t LW(uint32_t a) {
     int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) { uint32_t v; memcpy(&v, g_ram + o, 4); return v; }
+    if (RT_LIKELY(o >= 0)) return RAM32(o);
     return mem_read_slow(a, 4);
 }
-static inline uint32_t LHU(uint32_t a) {
+RT_INLINE uint32_t LHU(uint32_t a) {
     int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) { uint16_t v; memcpy(&v, g_ram + o, 2); return v; }
+    if (RT_LIKELY(o >= 0)) return RAM16(o);
     return mem_read_slow(a, 2) & 0xFFFFu;
 }
-static inline uint32_t LH(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LHU(a); }
-static inline uint32_t LBU(uint32_t a) {
+RT_INLINE uint32_t LH(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LHU(a); }
+RT_INLINE uint32_t LBU(uint32_t a) {
     int32_t o = ram_off(a);
     if (RT_LIKELY(o >= 0)) return g_ram[o];
     return mem_read_slow(a, 1) & 0xFFu;
 }
-static inline uint32_t LB(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBU(a); }
+RT_INLINE uint32_t LB(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBU(a); }
 
 #ifdef RT_DEBUG
 extern uint32_t g_watch; /* RT_WATCH=addr: log stores to that word */
@@ -72,19 +80,19 @@ void rt_watch_hit(uint32_t a, uint32_t v, int size);
 #define WATCH(a, v, n) do { } while (0)
 #endif
 
-static inline void SW(uint32_t a, uint32_t v) {
+RT_INLINE void SW(uint32_t a, uint32_t v) {
     WATCH(a, v, 4);
     int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) { memcpy(g_ram + o, &v, 4); return; }
+    if (RT_LIKELY(o >= 0)) { RAM32(o) = v; return; }
     mem_write_slow(a, v, 4);
 }
-static inline void SH(uint32_t a, uint32_t v) {
+RT_INLINE void SH(uint32_t a, uint32_t v) {
     WATCH(a, v, 2);
     int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) { uint16_t h = (uint16_t)v; memcpy(g_ram + o, &h, 2); return; }
+    if (RT_LIKELY(o >= 0)) { RAM16(o) = (uint16_t)v; return; }
     mem_write_slow(a, v & 0xFFFFu, 2);
 }
-static inline void SB(uint32_t a, uint32_t v) {
+RT_INLINE void SB(uint32_t a, uint32_t v) {
     WATCH(a, v, 1);
     int32_t o = ram_off(a);
     if (RT_LIKELY(o >= 0)) { g_ram[o] = (uint8_t)v; return; }
@@ -92,7 +100,7 @@ static inline void SB(uint32_t a, uint32_t v) {
 }
 
 /* unaligned word access, little-endian R3000 semantics */
-static inline uint32_t LWL(uint32_t a, uint32_t rt) {
+RT_INLINE uint32_t LWL(uint32_t a, uint32_t rt) {
     uint32_t w = LW(a & ~3u);
     switch (a & 3) {
     case 0: return (rt & 0x00FFFFFFu) | (w << 24);
@@ -101,7 +109,7 @@ static inline uint32_t LWL(uint32_t a, uint32_t rt) {
     default: return w;
     }
 }
-static inline uint32_t LWR(uint32_t a, uint32_t rt) {
+RT_INLINE uint32_t LWR(uint32_t a, uint32_t rt) {
     uint32_t w = LW(a & ~3u);
     switch (a & 3) {
     case 0: return w;
@@ -110,7 +118,7 @@ static inline uint32_t LWR(uint32_t a, uint32_t rt) {
     default: return (rt & 0xFFFFFF00u) | (w >> 24);
     }
 }
-static inline void SWL(uint32_t a, uint32_t rt) {
+RT_INLINE void SWL(uint32_t a, uint32_t rt) {
     uint32_t al = a & ~3u, w = LW(al);
     switch (a & 3) {
     case 0: w = (w & 0xFFFFFF00u) | (rt >> 24); break;
@@ -120,7 +128,7 @@ static inline void SWL(uint32_t a, uint32_t rt) {
     }
     SW(al, w);
 }
-static inline void SWR(uint32_t a, uint32_t rt) {
+RT_INLINE void SWR(uint32_t a, uint32_t rt) {
     uint32_t al = a & ~3u, w = LW(al);
     switch (a & 3) {
     case 0: w = rt; break;
@@ -132,13 +140,13 @@ static inline void SWR(uint32_t a, uint32_t rt) {
 }
 
 /* R3000 division, including its answers for x/0 and INT_MIN/-1 */
-static inline void DIV(uint32_t rs, uint32_t rt, uint32_t* hi, uint32_t* lo) {
+RT_INLINE void DIV(uint32_t rs, uint32_t rt, uint32_t* hi, uint32_t* lo) {
     int32_t n = (int32_t)rs, d = (int32_t)rt;
     if (d == 0) { *hi = rs; *lo = n >= 0 ? 0xFFFFFFFFu : 1u; }
     else if (n == INT32_MIN && d == -1) { *hi = 0; *lo = 0x80000000u; }
     else { *hi = (uint32_t)(n % d); *lo = (uint32_t)(n / d); }
 }
-static inline void DIVU(uint32_t rs, uint32_t rt, uint32_t* hi, uint32_t* lo) {
+RT_INLINE void DIVU(uint32_t rs, uint32_t rt, uint32_t* hi, uint32_t* lo) {
     if (rt == 0) { *hi = rs; *lo = 0xFFFFFFFFu; }
     else { *hi = rs % rt; *lo = rs / rt; }
 }
@@ -155,7 +163,7 @@ void Psyz_GteCommand(unsigned int cmd);
 #ifdef RT_DEBUG
 extern uint32_t g_shadow[256];
 extern int g_shadow_n, g_shadow_max;
-static inline void rt_leave_(int* d) { g_shadow_n = *d; }
+RT_INLINE void rt_leave_(int* d) { g_shadow_n = *d; }
 #define RT_ENTER(a)                                                         \
     __attribute__((cleanup(rt_leave_))) int shadow_d_ = g_shadow_n;         \
     if (g_shadow_n < 256) g_shadow[g_shadow_n] = (a);                       \
