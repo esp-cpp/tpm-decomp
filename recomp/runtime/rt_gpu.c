@@ -64,6 +64,8 @@ void Draw_Reset(void) {
         s->y1 = VRAM_H - 1;
         s->mask_or = 0;
         s->mask_check = 0;
+        tw_c[c].uand = tw_c[c].vand = 0xFF;
+        tw_c[c].uor = tw_c[c].vor = 0;
     }
 }
 
@@ -255,7 +257,7 @@ static void exec_packet_(void) {
         break;
     case 0xE2:
         e2 = cmd[0] & 0xFFFFF;
-        Draw_SetTextureWindow(e2 & 0x1F, (e2 >> 5) & 0x1F, (e2 >> 10) & 0x1F, (e2 >> 15) & 0x1F);
+        Draw_SetTextureWindowE2(e2);
         break;
     case 0xE3:
         e3 = cmd[0] & 0xFFFFF;
