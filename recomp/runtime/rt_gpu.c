@@ -20,6 +20,10 @@ u16* g_rt_vram;
 #ifndef SOFT_RASTER_IRAM
 #define SOFT_RASTER_IRAM /* internal RAM is the board's scarce memory */
 #endif
+#if defined(ESP_PLATFORM) && defined(TPM_SPAN_IRAM)
+#include "esp_attr.h"
+#define SOFT_SPAN_IRAM IRAM_ATTR
+#endif
 
 #define SOFT_RASTER_STANDALONE
 #define SOFT_RASTER_NO_FALLBACK
