@@ -710,6 +710,34 @@ uint32_t rt_gpu_bench(const uint32_t* rec, uint32_t words, int reps) {
     return vblanks ? (uint32_t)(total / (uint64_t)reps / vblanks) : 0;
 }
 
+/* n words of one DMA packet: with the queue, reserved and published at once
+ * (one release, one wake check) instead of word by word */
+void gpu_gp0_words(const uint32_t* w, uint32_t n) {
+    if (!async_on || !ring || rec_f || n > 256) {
+        for (uint32_t i = 0; i < n; i++) gpu_gp0(w[i]);
+        return;
+    }
+    uint32_t wp = ring_w;
+    if (wp + n - ring_tail() > RING_ENTRIES) {
+        plat_gpu_kick();
+        prod_wait = 1;
+        while (wp + n - ring_tail() > RING_ENTRIES) plat_gpu_idle();
+        prod_wait = 0;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t j = ((wp + i) & (RING_ENTRIES - 1)) * 2;
+        ring[j] = Q_GP0;
+        ring[j + 1] = w[i];
+    }
+    __atomic_store_n(&ring_w, wp + n, __ATOMIC_RELEASE);
+    /* a worker that ran dry is woken once a batch built up */
+    const uint32_t r1 = ring_load(&ring_r[1]);
+    if ((wp - r1 < KICK_BATCH && wp + n - r1 >= KICK_BATCH) ||
+        (nworkers == 2 && wp - ring_load(&ring_r[0]) < KICK_BATCH &&
+         wp + n - ring_load(&ring_r[0]) >= KICK_BATCH))
+        plat_gpu_kick();
+}
+
 void gpu_gp0(uint32_t w) {
     rec_put(Q_GP0, w);
     if (async_on && ring) ring_push(Q_GP0, w);

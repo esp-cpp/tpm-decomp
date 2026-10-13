@@ -91,7 +91,11 @@ static void dma_gpu(void) {
         for (int guard = 0; guard < 0x40000; guard++) {
             uint32_t hdr = LW(0x80000000u | addr);
             uint32_t n = hdr >> 24;
-            for (uint32_t i = 1; i <= n; i++) gpu_gp0(LW(0x80000000u | (addr + 4 * i)));
+            if (n && addr + 4 * n < RAM_SIZE) {
+                gpu_gp0_words((const uint32_t*)(g_ram + addr + 4), n);
+            } else {
+                for (uint32_t i = 1; i <= n; i++) gpu_gp0(LW(0x80000000u | (addr + 4 * i)));
+            }
             if (hdr & 0x800000u) break; /* 0xFFFFFF: end of list */
             addr = hdr & 0x1FFFFCu;
         }

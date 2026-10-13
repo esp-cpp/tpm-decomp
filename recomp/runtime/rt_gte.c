@@ -272,12 +272,14 @@ static void nc_core(int kind, int sf, int lm, int v, uint32_t* flag) {
     color_push(flag);
 }
 
-void rt_gte_command(uint32_t cmd) {
+/* one command; `op` is a constant in each rt_gte_op_XX below, so the switch
+ * folds away and each gets only its own code */
+static inline __attribute__((always_inline)) void gte_exec(uint32_t cmd, unsigned op) {
     RtGte* g = G;
     const int sf = (cmd >> 19) & 1, lm = (cmd >> 10) & 1;
     const int shift = sf ? 12 : 0;
     uint32_t flag = 0;
-    switch (cmd & 0x3F) {
+    switch (op) {
     case 0x01: rtps(0, sf, lm, 1, &flag); break;
     case 0x30:
         rtps(0, sf, lm, 0, &flag);
@@ -361,7 +363,7 @@ void rt_gte_command(uint32_t cmd) {
         }
         break;
     case 0x2D: case 0x2E: { /* AVSZ3 / AVSZ4 */
-        if ((cmd & 0x3F) == 0x2D) g->mac[0] = g->zsf3 * (g->sz[1] + g->sz[2] + g->sz[3]);
+        if (op == 0x2D) g->mac[0] = g->zsf3 * (g->sz[1] + g->sz[2] + g->sz[3]);
         else g->mac[0] = g->zsf4 * (g->sz[0] + g->sz[1] + g->sz[2] + g->sz[3]);
         int32_t otz = g->mac[0] >> 12;
         if (otz < 0 || otz > 0xFFFF) {
@@ -402,4 +404,15 @@ void rt_gte_command(uint32_t cmd) {
     }
     if (flag & FLAG_ERROR_MASK) flag |= FLAG_ERROR;
     g->flag = flag;
+}
+
+#define RT_GTE_OP(o) void rt_gte_op_##o(uint32_t cmd) { gte_exec(cmd, 0x##o); }
+RT_GTE_OPS(RT_GTE_OP)
+
+void rt_gte_command(uint32_t cmd) {
+    switch (cmd & 0x3F) {
+#define RT_GTE_CASE(o) case 0x##o: rt_gte_op_##o(cmd); break;
+        RT_GTE_OPS(RT_GTE_CASE)
+    default: break; /* unknown: leaves everything as it was */
+    }
 }

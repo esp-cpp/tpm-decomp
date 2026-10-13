@@ -41,6 +41,7 @@ int gpu_alloc(void);
 void gpu_free(void);
 void gpu_present(void);
 void gpu_gp0(uint32_t w);
+void gpu_gp0_words(const uint32_t* w, uint32_t n);
 void gpu_gp1(uint32_t w);
 uint32_t gpu_read(void);
 uint32_t gpu_stat(void);

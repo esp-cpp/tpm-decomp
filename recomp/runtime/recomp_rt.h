@@ -170,7 +170,7 @@ void rt_gtec_cmd(uint32_t cmd);
 #define GTE_DW(n, v) rt_gte_write(n, v)
 #define GTE_CR(n) rt_gte_cread(n)
 #define GTE_CW(n, v) rt_gte_cwrite(n, v)
-#define GTE_CMD(c) rt_gte_command(c)
+#define GTE_CMD(c) rt_gte_cmd(c)
 #endif
 
 /* RT_DEBUG builds keep a shadow call stack of guest functions, for traces

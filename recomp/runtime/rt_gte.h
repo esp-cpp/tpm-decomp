@@ -46,6 +46,21 @@ extern RtGte g_gte;
 void rt_gte_command(uint32_t cmd);
 void rt_gte_reset(void);
 
+/* each command on its own (the generated code's command words are constants:
+ * rt_gte_cmd folds to one direct call) */
+#define RT_GTE_OPS(X)                                                          \
+    X(01) X(06) X(0C) X(10) X(11) X(12) X(13) X(14) X(16) X(1B) X(1C) X(1E)    \
+    X(20) X(28) X(29) X(2A) X(2D) X(2E) X(30) X(3D) X(3E) X(3F)
+#define RT_GTE_DECL(o) void rt_gte_op_##o(uint32_t cmd);
+RT_GTE_OPS(RT_GTE_DECL)
+static inline void rt_gte_cmd(uint32_t cmd) {
+    switch (cmd & 0x3F) {
+#define RT_GTE_CALL(o) case 0x##o: rt_gte_op_##o(cmd); break;
+        RT_GTE_OPS(RT_GTE_CALL)
+    default: break;
+    }
+}
+
 static inline uint32_t gte_pack(int16_t lo, int16_t hi) {
     return (uint32_t)(uint16_t)lo | ((uint32_t)(uint16_t)hi << 16);
 }
