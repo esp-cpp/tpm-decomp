@@ -30,8 +30,10 @@ u16 g_rt_vram[VRAM_H * VRAM_W];
 #ifdef ESP_PLATFORM
 #define SOFT_RASTER_RECIP /* RV32: no 64-bit divide (GCC nested function) */
 #endif
-/* the core's ESP32 diagnostics name the MGS port's VRAM: point them at ours */
-#define g_RawVram g_rt_vram
+/* the core's ESP32 diagnostics name the MGS port's VRAM (a pointer there):
+ * point them at ours */
+u16* rt_vram_ptr = g_rt_vram;
+#define g_RawVram rt_vram_ptr
 #include "platform/soft_raster.inc.c"
 #undef g_RawVram
 
