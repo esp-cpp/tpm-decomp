@@ -245,6 +245,7 @@ SCRATCH_SITES = set()
 SITE_PROFILE = False
 VALUE_FLOW = True
 KNOWN_SCRATCH = set()   # this function's sites value_flow proved
+FLAG_LIVE = None        # GTE commands whose FLAG may be read (None: all)
 MEM_OPS = ("lb", "lh", "lw", "lbu", "lhu", "lwl", "lwr", "lwc2", "swc2") + \
     tuple(STORES.values())
 
@@ -354,6 +355,8 @@ def op_c_(i, dst=None):
     if o == "ctc2":
         return "GTE_CW(%d, %s);" % (i.rd, R(i.rt))
     if o == "cop2":
+        if FLAG_LIVE is not None and i.pc not in FLAG_LIVE:
+            return "GTE_CMDNF(0x%07Xu);" % (i.w & 0x1FFFFFF)
         return "GTE_CMD(0x%07Xu);" % (i.w & 0x1FFFFFF)
     if o == "lwc2":
         return "GTE_DW(%d, %s(%s));" % (i.rt, acc(i, "LW"), addr(i))
@@ -1625,6 +1628,169 @@ def value_flow(em, f, ins):
     return {pc for pc, r in scr.items() if r}, consts
 
 
+
+# ------------------------------------------------------------- GTE FLAG --
+#
+# Every GTE command rewrites FLAG; a command whose FLAG no cfc2 $31 reads
+# before the next command can leave it alone (GTE_CMDNF: what only fed it
+# is not computed). That holds when every read of FLAG has a command before
+# it on each path inside its function (nothing comes from outside it, calls
+# included); then a command's FLAG is read only if a read is reachable from
+# it inside the function without another command between.
+
+def flag_live_sites(insns, funcs):
+    """The command pcs whose FLAG may be read, or None for all of them."""
+    ctl = ("branch", "jump", "jal", "jr", "jalr")
+
+    def is_cmd(i):
+        return i.op == "cop2"
+
+    def is_read(i):
+        return i.op == "cfc2" and i.rd == 31
+
+    reads = {a for a in insns.reach if is_read(insns[a])}
+    if not reads:
+        return set()
+    live = set()
+    for f in funcs:
+        ins = [insns[a] for a in range(f.start, f.end, 4) if a in insns.reach]
+        if not any(is_read(i) for i in ins):
+            continue
+        at = {i.pc: k for k, i in enumerate(ins)}
+        n = len(ins)
+        # straight-line steps: (pc of the next point, fresh after) for the
+        # instruction at k and its delay slot
+        def step(k, fresh):
+            """[(successor pc, fresh)] after ins[k] (and its slot)"""
+            i = ins[k]
+            if i.kind not in ctl:
+                if i.kind == "trap":
+                    fresh = False
+                elif is_cmd(i):
+                    fresh = True
+                return [(ins[k + 1].pc if k + 1 < n else None, fresh)], [i]
+            slot = ins[k + 1] if k + 1 < n else None
+            if slot is not None:
+                if is_cmd(slot):
+                    fresh = True
+                elif slot.kind == "trap":
+                    fresh = False
+            nxt = ins[k + 2].pc if k + 2 < n else None
+            out = []
+            inside = lambda t: t is not None and f.start <= t < f.end and t in at
+            if i.kind == "branch":
+                tk = vf_taken(i)
+                if i.op in ("bltzal", "bgezal"):
+                    out.append((nxt, False))  # a call: FLAG may be the callee's
+                    if inside(i.target):
+                        out.append((i.target, False))
+                else:
+                    if tk is not False:
+                        out.append((i.target, fresh) if inside(i.target) else (None, fresh))
+                    if tk is not True:
+                        out.append((nxt, fresh))
+            elif i.kind == "jump":
+                if inside(i.target):
+                    out.append((i.target, fresh))
+            elif i.kind in ("jal", "jalr"):
+                out.append((nxt, False))
+                if i.kind == "jal" and inside(i.target):
+                    out.append((i.target, False))
+            elif i.rs != RA:
+                for t in f.jr_targets:
+                    out.append((t, fresh))
+            return out, [i] + ([slot] if slot is not None else [])
+
+        # must-analysis: a command on every path to here since the outside
+        fresh = {}
+        work = []
+
+        def flow(t, v):
+            if t is None or t not in at:
+                return
+            old = fresh.get(t)
+            nv = v if old is None else (old and v)
+            if nv != old:
+                fresh[t] = nv
+                work.append(t)
+
+        outside = set(f.entries) | set(f.jr_targets)
+        for e in outside:
+            flow(e, False)
+        slots = {ins[k + 1].pc for k, i in enumerate(ins) if i.kind in ctl and k + 1 < n}
+        bad = False
+        while work:
+            pc = work.pop()
+            k = at[pc]
+            v = fresh[pc]
+            if pc in slots:
+                # a delay slot jumped into: it alone, then pc + 4
+                i = ins[k]
+                if is_read(i) and not v:
+                    bad = True
+                v = True if is_cmd(i) else v
+                flow(ins[k + 1].pc if k + 1 < n else None, v)
+                continue
+            while True:
+                i = ins[k]
+                if is_read(i) and not v:
+                    bad = True
+                if i.kind in ctl:
+                    slot = ins[k + 1] if k + 1 < n else None
+                    if slot is not None and is_read(slot) and not v:
+                        bad = True
+                    for t, fv in step(k, v)[0]:
+                        flow(t, fv)
+                    break
+                (t, v), = step(k, v)[0]
+                if t is None:
+                    break
+                if t in f.labels or t in outside:
+                    flow(t, v)
+                    break
+                k = at[t]
+        if bad:
+            return None
+        # the commands a read is reachable from without another command
+        for k, i in enumerate(ins):
+            c = i if is_cmd(i) else None
+            if c is None:
+                continue
+            seen = set()
+            todo = [(k + 1, True)]
+            if k > 0 and ins[k - 1].kind in ctl:
+                # a delay slot: on to where its branch goes
+                todo += [(at[t], False) for t, _ in step(k - 1, True)[0]
+                         if t is not None and t in at]
+                if i.pc not in f.labels:
+                    todo.pop(0)  # pc + 4 only after a jump into the slot
+            while todo:
+                kk, first = todo.pop()
+                if kk >= n:
+                    continue
+                j = ins[kk]
+                if is_read(j):
+                    live.add(c.pc)
+                    break
+                if is_cmd(j):
+                    continue
+                if j.pc in seen:
+                    continue
+                seen.add(j.pc)
+                if j.kind in ctl:
+                    slot = ins[kk + 1] if kk + 1 < n else None
+                    if slot is not None and is_read(slot):
+                        live.add(c.pc)
+                        break
+                    if slot is not None and is_cmd(slot):
+                        continue
+                    for t, _ in step(kk, True)[0]:
+                        if t is not None and t in at:
+                            todo.append((at[t], False))
+                else:
+                    todo.append((kk + 1, False))
+    return live
+
 # ---------------------------------------------------------------- emitting --
 
 def fname(a):
@@ -2165,6 +2331,10 @@ def main():
     if not args.full_sync:
         em.flow = RegFlow(em)
         em.flow.run()
+    global FLAG_LIVE
+    FLAG_LIVE = flag_live_sites(insns, funcs) if VALUE_FLOW else None
+    print("recomp: GTE FLAG read after %s commands" % (
+        "all" if FLAG_LIVE is None else len(FLAG_LIVE)), file=sys.stderr)
 
     os.makedirs(args.outdir, exist_ok=True)
     bodies = [em.emit_func(f) for f in funcs]

@@ -438,7 +438,7 @@ GTE_FAST void nc_core(int kind, int sf, int lm, int v, uint32_t* flag) {
 
 /* one command; `op` is a constant in each rt_gte_op_XX below, so the switch
  * folds away and each gets only its own code */
-static inline __attribute__((always_inline)) void gte_exec(uint32_t cmd, unsigned op) {
+static inline __attribute__((always_inline)) void gte_exec(uint32_t cmd, unsigned op, int want_flag) {
     RtGte* g = G;
     const int sf = (cmd >> 19) & 1, lm = (cmd >> 10) & 1;
     const int shift = sf ? 12 : 0;
@@ -566,6 +566,7 @@ static inline __attribute__((always_inline)) void gte_exec(uint32_t cmd, unsigne
     default:
         return; /* unknown: leaves everything, FLAG included, as it was */
     }
+    if (!want_flag) return;
     if (flag & FLAG_ERROR_MASK) flag |= FLAG_ERROR;
     g->flag = flag;
 }
@@ -582,13 +583,14 @@ static void gte_count(unsigned op) {
     if (!once) { once = 1; atexit(gte_cnt_dump); }
     gte_cnt[op]++;
 }
-#define RT_GTE_OP(o) void rt_gte_op_##o(uint32_t cmd) { gte_count(0x##o); gte_exec(cmd, 0x##o); }
+#define RT_GTE_OP(o) void rt_gte_op_##o(uint32_t cmd) { gte_count(0x##o); gte_exec(cmd, 0x##o, 1); }
 #else
-#define RT_GTE_OP(o) void rt_gte_op_##o(uint32_t cmd) { gte_exec(cmd, 0x##o); }
+#define RT_GTE_OP(o) void rt_gte_op_##o(uint32_t cmd) { gte_exec(cmd, 0x##o, 1); }
 #endif
 RT_GTE_OPS(RT_GTE_OP)
 
-#define RT_GTE_W(w) void rt_gte_w_##w(void) { gte_exec(0x##w, 0x##w & 0x3F); }
+#define RT_GTE_W(w) void rt_gte_w_##w(void) { gte_exec(0x##w, 0x##w & 0x3F, 1); } \
+    void rt_gte_n_##w(void) { gte_exec(0x##w, 0x##w & 0x3F, 0); }
 RT_GTE_WORDS(RT_GTE_W)
 
 void rt_gte_command(uint32_t cmd) {

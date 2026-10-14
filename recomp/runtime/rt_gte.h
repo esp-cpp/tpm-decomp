@@ -62,8 +62,22 @@ RT_GTE_OPS(RT_GTE_DECL)
     X(04A2012) X(198003D) X(190003D) X(0A00428) X(0A80428) X(1780010)          \
     X(0780010) X(0980011) X(170000C) X(178000C) X(1A8003E) X(158002D)          \
     X(168002E) X(0F8002A) X(0680029)
-#define RT_GTE_WDECL(w) void rt_gte_w_##w(void);
+#define RT_GTE_WDECL(w) void rt_gte_w_##w(void); void rt_gte_n_##w(void);
 RT_GTE_WORDS(RT_GTE_WDECL)
+/* a command whose FLAG nothing reads (tools/recomp.py): FLAG keeps its old
+ * value, and what only fed it is not computed */
+static inline __attribute__((always_inline)) void rt_gte_cmd_nf(uint32_t cmd) {
+    switch (cmd & 0x1FFFFFF) {
+#define RT_GTE_NCALL(w) case 0x##w: rt_gte_n_##w(); return;
+        RT_GTE_WORDS(RT_GTE_NCALL)
+    default: break;
+    }
+    switch (cmd & 0x3F) {
+#define RT_GTE_CALL_NF(o) case 0x##o: rt_gte_op_##o(cmd); break;
+        RT_GTE_OPS(RT_GTE_CALL_NF)
+    default: break;
+    }
+}
 static inline __attribute__((always_inline)) void rt_gte_cmd(uint32_t cmd) {
     switch (cmd & 0x1FFFFFF) {
 #define RT_GTE_WCALL(w) case 0x##w: rt_gte_w_##w(); return;

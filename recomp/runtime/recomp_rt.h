@@ -228,12 +228,14 @@ void rt_gtec_cmd(uint32_t cmd);
 #define GTE_CR(n) rt_gtec_cr(n)
 #define GTE_CW(n, v) rt_gtec_cw(n, v)
 #define GTE_CMD(c) rt_gtec_cmd(c)
+#define GTE_CMDNF(c) rt_gtec_cmd(c) /* the check compares FLAG too */
 #else
 #define GTE_DR(n) rt_gte_read(n)
 #define GTE_DW(n, v) rt_gte_write(n, v)
 #define GTE_CR(n) rt_gte_cread(n)
 #define GTE_CW(n, v) rt_gte_cwrite(n, v)
 #define GTE_CMD(c) rt_gte_cmd(c)
+#define GTE_CMDNF(c) rt_gte_cmd_nf(c) /* FLAG left as it was: nothing reads it */
 #endif
 
 /* RT_DEBUG builds keep a shadow call stack of guest functions, for traces

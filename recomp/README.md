@@ -32,6 +32,10 @@ player overlay, your disc image).
   A local call's `jr $ra` goes back only to the return sites of the calls
   whose entry reaches it (anything else reaches `rt_jump_ra`, which reports
   it). `--no-value-flow` turns it off for comparisons.
+- **GTE FLAG**: every command rewrites FLAG, and TPM reads it once (right
+  after `RotTransPers`' RTPS). When every read has a command before it on
+  each path inside its function, a command none of them is reachable from
+  leaves FLAG alone (`GTE_CMDNF`), and what only fed it is not computed.
 - **Time**: every loop back-edge counts down a budget; at zero the runtime
   advances its clock, runs the hardware (vblank, CD, SPU) and takes
   interrupts there.
