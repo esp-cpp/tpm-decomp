@@ -1339,6 +1339,7 @@ class Emitter:
         # its `jr $ra` comes back through the return address (no registers
         # through g_cpu)
         self.local_rets = set()
+        self.inside_only = set()
         if len(f.entries) > 1 and not (self.check or self.poison):
             reach = {i.pc for i in ins}
             for i in ins:
@@ -1346,6 +1347,18 @@ class Emitter:
                 if t is not None and t in f.entries and f.start <= t < f.end and \
                         i.pc + 8 in reach:
                     self.local_rets.add(i.pc + 8)
+            # an entry nothing outside the function reaches (no call or
+            # jump from elsewhere, no address taken) is entered only by the
+            # local calls: its outside way in fails loudly, and the C
+            # compiler then sees what the registers hold there (the
+            # renderer's scratchpad base, for one)
+            if self.local_rets:
+                refs = self.outside_refs()
+                for e in f.entries[1:]:
+                    if e not in self.taken and e not in self.special and \
+                            e not in self.hle and not any(
+                                not (f.start <= r < f.end) for r in refs.get(e, ())):
+                        self.inside_only.add(e)
         out = []
         nm = self.names.get(f.start)
         out.append("/* %s */" % nm if nm else "")
@@ -1363,7 +1376,8 @@ class Emitter:
         out.append("    RT_ENTER(0x%08Xu);" % f.start)
         if multi:
             out.append("    switch (e_) { %s}" % "".join(
-                "case %d: goto L_%08X; " % (k, e)
+                ("case %d: rt_entry_outside(0x%08Xu); " if e in self.inside_only
+                 else "case %d: goto L_%08X; ") % (k, e)
                 for k, e in enumerate(f.entries) if k))
         k = 0
         n = len(ins)
@@ -1421,6 +1435,16 @@ class Emitter:
                 out.append("void %s(void) { b_%08X(%d); }%s" % (
                     fname(e), f.start, k, " /* %s */" % nm if nm else ""))
         return "\n".join(out)
+
+    def outside_refs(self):
+        """target -> the pcs of the calls and jumps to it"""
+        if not hasattr(self, "_refs"):
+            self._refs = {}
+            for a in self.insns.reach:
+                i = self.insns[a]
+                if i.kind in ("jal", "jump", "branch") and getattr(i, "target", None) is not None:
+                    self._refs.setdefault(i.target, []).append(a)
+        return self._refs
 
     def sync_out_mask(self, m):
         s = "".join("g_cpu.r[%d] = r%d; " % (r, r) for r in self.written

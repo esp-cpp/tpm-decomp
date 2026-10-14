@@ -236,6 +236,7 @@ void rt_dispatch(uint32_t target);           /* call through a pointer */
 void rt_jump(uint32_t target, uint32_t pc);  /* jr to somewhere unknown */
 void rt_jump_ra(uint32_t target, uint32_t pc);  /* jr $ra that does not return */
 void rt_jump_tbl(uint32_t target, uint32_t pc); /* jump table leaving its function */
+void rt_entry_outside(uint32_t entry) __attribute__((noreturn)); /* recomp.py: only local calls enter there */
 void rt_dispatch_ind(uint32_t target);          /* jalr: a call through a pointer */
 void rt_clobber_check(const Cpu* before, unsigned long long keep, uint32_t pc); /* --check */
 void rt_jump_ind(uint32_t target, uint32_t pc); /* jr: a tail call through a pointer */

@@ -375,6 +375,13 @@ void rt_idle(uint32_t cycles) {
     hw_update();
 }
 
+/* an entry the recompiler found only local calls to (recomp.py's
+ * inside_only), entered from outside after all */
+void rt_entry_outside(uint32_t entry) {
+    rt_fatal("%08X entered from outside its function (ra %08X)", (unsigned)entry,
+             (unsigned)g_cpu.r[31]);
+}
+
 /* ---- boot ---- */
 void rt_shutdown(void) {
     hw_free();
