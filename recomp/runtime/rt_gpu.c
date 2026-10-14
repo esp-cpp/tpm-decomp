@@ -228,6 +228,14 @@ void gpu_reset(void) {
 
 int gpu_alloc(void) {
     if (!g_rt_vram) g_rt_vram = (u16*)plat_alloc(VRAM_W * VRAM_H * 2);
+#ifdef SOFT_TILED_TEX
+    {
+        /* the rasterizer's tiled texture shadow, from the same pool */
+        void** ts = Draw_TiledSlot();
+        if (!*ts) *ts = plat_alloc(VRAM_W * VRAM_H * 2);
+        if (!*ts) return 0;
+    }
+#endif
     if (async_on && !ring) ring = (uint32_t*)plat_alloc(RING_ENTRIES * 2 * sizeof(uint32_t));
     ring_w = ring_r[0] = ring_r[1] = 0;
     vbl_queued = vbl_done = 0;
@@ -240,6 +248,13 @@ void gpu_free(void) {
     gpu_drain();
     plat_free(ring);
     ring = NULL;
+#ifdef SOFT_TILED_TEX
+    {
+        void** ts = Draw_TiledSlot(); /* (plat_alloc's, not the caches' own) */
+        plat_free(*ts);
+        *ts = NULL;
+    }
+#endif
 #ifdef ESP_PLATFORM
     Draw_FreeCaches();
 #endif
