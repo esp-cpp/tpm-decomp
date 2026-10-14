@@ -448,13 +448,25 @@ void rt_boot(const uint8_t* exe, uint32_t size) {
     RT_LOG("boot: pc %08X gp %08X text %08X+%X", (unsigned)pc0, (unsigned)gp0,
            (unsigned)t_addr, (unsigned)t_size);
     rt_set_realtime(realtime);
+#ifdef RT_RAM_REG
+    /* the generated code's g_ram register (recomp_rt.h): the caller's value
+     * is put back on the way out, as the ABI has it for a saved register */
+    volatile uintptr_t caller_reg;
+    __asm__ volatile("mv %0, " RT_STR(RT_RAM_REG) : "=r"(caller_reg));
+#endif
     if (setjmp(boot_jb)) {
         RT_LOG("exit");
 #ifdef RT_DEBUG
         g_shadow_n = 0;
 #endif
+#ifdef RT_RAM_REG
+        __asm__ volatile("mv " RT_STR(RT_RAM_REG) ", %0" : : "r"(caller_reg));
+#endif
         return;
     }
+#ifdef RT_RAM_REG
+    __asm__ volatile("mv " RT_STR(RT_RAM_REG) ", %0" : : "r"(g_ram));
+#endif
     rt_dispatch(pc0);
     rt_fatal("the executable returned");
 }

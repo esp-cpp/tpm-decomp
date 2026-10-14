@@ -56,11 +56,22 @@ void mem_write_slow(uint32_t a, uint32_t v, int size);
 /* Guest loads and stores are aligned (the R3000 traps otherwise; LWL/LWR
  * work byte-wise), so they are plain typed accesses: through memcpy an RV32
  * compiler cannot assume alignment and calls the library. */
-#define RAM32(o) (*(uint32_t*)(g_ram + (o)))
-#define RAM16(o) (*(uint16_t*)(g_ram + (o)))
+/* RT_RAM_REG (the board: every file of the runtime and the game built with
+ * -ffixed-<reg>): the generated code finds g_ram in that register, set by
+ * rt_boot, instead of loading the pointer before every access */
+#define RT_STR_(x) #x
+#define RT_STR(x) RT_STR_(x)
+#if defined(RT_RAM_REG) && defined(RT_GENERATED)
+register uint8_t* rt_ram_reg __asm__(RT_STR(RT_RAM_REG));
+#define RT_RAM rt_ram_reg
+#else
+#define RT_RAM g_ram
+#endif
+#define RAM32(o) (*(uint32_t*)(RT_RAM + (o)))
+#define RAM16(o) (*(uint16_t*)(RT_RAM + (o)))
 #define SCR32(o) (*(uint32_t*)(g_scratch + (o)))
 #define SCR16(o) (*(uint16_t*)(g_scratch + (o)))
-#define RAM8(o) (g_ram[o])
+#define RAM8(o) (RT_RAM[o])
 #define SCR8(o) (g_scratch[o])
 
 /* Where a guest address lands in g_ram, or -1 for the rest. KUSEG, KSEG0
