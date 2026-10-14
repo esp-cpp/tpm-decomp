@@ -449,6 +449,17 @@ static void exec_packet_(Parser* p) {
         r.y = (short)((cmd[1] >> 16) & 0x1FF);
         r.w = (short)(((cmd[2] & 0x3FF) + 15) & ~15);
         r.h = (short)((cmd[2] >> 16) & 0x1FF);
+        if (fs_max && fs_skipping && nworkers == 1) {
+            /* a dropped frame's clear of a display buffer: dropped with it */
+            for (int i = 0; i < FS_BUFS; i++) {
+                FsBuf* f = &fs_buf[i];
+                if (f->shown && r.x >= f->x0 && r.x + r.w - 1 <= f->x1 && r.y >= f->y0 &&
+                    r.y + r.h - 1 <= f->y1) {
+                    f->stale = fs_dropped = 1;
+                    return;
+                }
+            }
+        }
         Draw_ClearImage(&r, cmd[0] & 0xFF, (cmd[0] >> 8) & 0xFF, (cmd[0] >> 16) & 0xFF);
         return;
     }
