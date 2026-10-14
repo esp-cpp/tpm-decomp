@@ -64,7 +64,7 @@ RT_GTE_OPS(RT_GTE_DECL)
     X(168002E) X(0F8002A) X(0680029)
 #define RT_GTE_WDECL(w) void rt_gte_w_##w(void);
 RT_GTE_WORDS(RT_GTE_WDECL)
-static inline void rt_gte_cmd(uint32_t cmd) {
+static inline __attribute__((always_inline)) void rt_gte_cmd(uint32_t cmd) {
     switch (cmd & 0x1FFFFFF) {
 #define RT_GTE_WCALL(w) case 0x##w: rt_gte_w_##w(); return;
         RT_GTE_WORDS(RT_GTE_WCALL)
@@ -86,7 +86,7 @@ static inline int rt_gte_lzc(int32_t v) {
 }
 static inline int16_t gte_sat5(int v) { return (int16_t)(v < 0 ? 0 : v > 0x1F ? 0x1F : v); }
 
-static inline uint32_t rt_gte_read(unsigned idx) {
+static inline __attribute__((always_inline)) uint32_t rt_gte_read(unsigned idx) {
     RtGte* g = &g_gte;
     switch (idx) {
     case 0: case 2: case 4: return gte_pack(g->v[idx >> 1][0], g->v[idx >> 1][1]);
@@ -108,7 +108,7 @@ static inline uint32_t rt_gte_read(unsigned idx) {
     }
 }
 
-static inline void rt_gte_write(unsigned idx, uint32_t v) {
+static inline __attribute__((always_inline)) void rt_gte_write(unsigned idx, uint32_t v) {
     RtGte* g = &g_gte;
     switch (idx) {
     case 0: case 2: case 4:
@@ -146,7 +146,7 @@ static inline void rt_gte_write(unsigned idx, uint32_t v) {
     }
 }
 
-static inline uint32_t rt_gte_cread(unsigned idx) {
+static inline __attribute__((always_inline)) uint32_t rt_gte_cread(unsigned idx) {
     RtGte* g = &g_gte;
     switch (idx) {
     case 0: return gte_pack(g->rt[0][0], g->rt[0][1]);
@@ -178,7 +178,7 @@ static inline uint32_t rt_gte_cread(unsigned idx) {
     }
 }
 
-static inline void rt_gte_cwrite(unsigned idx, uint32_t v) {
+static inline __attribute__((always_inline)) void rt_gte_cwrite(unsigned idx, uint32_t v) {
     RtGte* g = &g_gte;
     int16_t lo = (int16_t)v, hi = (int16_t)(v >> 16);
     switch (idx) {
