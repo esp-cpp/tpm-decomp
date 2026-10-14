@@ -45,6 +45,11 @@ __thread int psyz_host_core;
 #define SOFT_RASTER_FLOAT_GRAD /* ...and the P4 has an FPU: gradients in float
                                 * (exact fix-up included; the MGS port's setting) */
 #endif
+#if defined(ESP_PLATFORM) || defined(RT_HOST_TILED_TEX)
+#define SOFT_TILED_TEX /* texels from an 8x8-tiled shadow of VRAM: a texture
+                        * walked along v changes cache lines every 8 texels,
+                        * not every texel (rows of VRAM are 2 KB apart) */
+#endif
 /* the core's ESP32 diagnostics name the MGS port's VRAM: point them at ours */
 #define g_RawVram g_rt_vram
 #include "platform/soft_raster.inc.c"
