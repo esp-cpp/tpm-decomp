@@ -382,6 +382,13 @@ void rt_entry_outside(uint32_t entry) {
              (unsigned)g_cpu.r[31]);
 }
 
+#ifdef RT_DEBUG
+/* a site recomp.py's value flow proved always reaches the scratchpad did not */
+void rt_known_miss(uint32_t a) {
+    rt_fatal("known-scratchpad access to %08X (ra %08X)", (unsigned)a, (unsigned)g_cpu.r[31]);
+}
+#endif
+
 /* ---- boot ---- */
 /* everything rt_boot takes from plat_alloc, in bytes and allocations (the
  * platform adds its own alignment to each), so a platform can set aside one

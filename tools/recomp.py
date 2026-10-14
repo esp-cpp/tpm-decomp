@@ -243,11 +243,15 @@ def addr(i):
 # address (SITE) so a desktop run can tell which sites those are.
 SCRATCH_SITES = set()
 SITE_PROFILE = False
+VALUE_FLOW = True
+KNOWN_SCRATCH = set()   # this function's sites value_flow proved
 MEM_OPS = ("lb", "lh", "lw", "lbu", "lhu", "lwl", "lwr", "lwc2", "swc2") + \
     tuple(STORES.values())
 
 
 def acc(i, name):
+    if i.pc in KNOWN_SCRATCH:
+        return name + "k"  # always the scratchpad (value_flow)
     return name + "s" if i.pc in SCRATCH_SITES else name
 
 
@@ -1274,6 +1278,353 @@ class RegFlow:
         return out, clob & used
 
 
+# ------------------------------------------------------------ value flow --
+#
+# What the registers can hold at each instruction of a function: a few
+# constants, or an unsigned range, or anything. A load or store whose address
+# is then always in the scratchpad goes there directly (no address check),
+# and a register that is one constant at a label is assigned there, so the C
+# compiler sees it past the joins it cannot see through (the local calls'
+# return switch: the renderer's scratchpad base). The flow follows the C
+# that emit_func_body writes, edge for edge.
+
+U32 = 0xFFFFFFFF
+VF_SET = 16        # constants kept as a set up to this many
+VF_WIDEN = 24      # visits of a point before growing ranges give up
+SCR_LO, SCR_HI = 0x1F800000, 0x1F800400
+MEM_SIZE = {"lb": 1, "lbu": 1, "sb": 1, "lh": 2, "lhu": 2, "sh": 2,
+            "lw": 4, "sw": 4, "lwc2": 4, "swc2": 4}
+
+
+def vf_range(v):
+    if v is None:
+        return 0, U32
+    if v[0] == "k":
+        return min(v[1]), max(v[1])
+    return v[1], v[2]
+
+
+def vf_rng(lo, hi):
+    if lo < 0 or hi > U32 or lo > hi:
+        return None
+    if lo == 0 and hi == U32:
+        return None
+    return ("r", lo, hi)
+
+
+def vf_join(a, b):
+    if a == b:
+        return a
+    if a is None or b is None:
+        return None
+    if a[0] == "k" and b[0] == "k":
+        s = a[1] | b[1]
+        if len(s) <= VF_SET:
+            return ("k", s)
+    la, ha = vf_range(a)
+    lb, hb = vf_range(b)
+    return vf_rng(min(la, lb), max(ha, hb))
+
+
+def vf_eval(o, x, y):
+    """x op y on constants (y: the immediate for I-type ops)."""
+    sx = x - (1 << 32) if x >> 31 else x
+    sy = y - (1 << 32) if y >> 31 else y
+    if o in ("add", "addu", "addi", "addiu"):
+        return (x + y) & U32
+    if o in ("sub", "subu"):
+        return (x - y) & U32
+    if o in ("and", "andi"):
+        return x & y
+    if o in ("or", "ori"):
+        return x | y
+    if o in ("xor", "xori"):
+        return x ^ y
+    if o == "nor":
+        return ~(x | y) & U32
+    if o in ("slt", "slti"):
+        return int(sx < sy)
+    if o in ("sltu", "sltiu"):
+        return int(x < y)
+    if o in ("sll", "sllv"):
+        return (x << (y & 31)) & U32
+    if o in ("srl", "srlv"):
+        return x >> (y & 31)
+    if o in ("sra", "srav"):
+        return (sx >> (y & 31)) & U32
+    return None
+
+
+def vf_bits(h):
+    return (1 << h.bit_length()) - 1
+
+
+def vf_op(o, a, b):
+    """The value of a op b (b is ("k", {imm}) for immediates)."""
+    if a is not None and b is not None and a[0] == "k" and b[0] == "k" and \
+            len(a[1]) * len(b[1]) <= VF_SET:
+        s = set()
+        for x in a[1]:
+            for y in b[1]:
+                r = vf_eval(o, x, y)
+                if r is None:
+                    return None
+                s.add(r)
+        return ("k", frozenset(s))
+    la, ha = vf_range(a)
+    lb, hb = vf_range(b)
+    if o in ("add", "addu", "addi", "addiu"):
+        if o in ("addi", "addiu") and lb == hb and lb >> 31:
+            d = lb - (1 << 32)  # a negative immediate
+            return vf_rng(la + d, ha + d)
+        return vf_rng(la + lb, ha + hb)
+    if o in ("sub", "subu"):
+        return vf_rng(la - hb, ha - lb)
+    if o in ("and", "andi"):
+        return vf_rng(0, min(ha, hb))
+    if o in ("or", "ori", "xor", "xori"):
+        if hb > ha:
+            la, ha, lb, hb = lb, hb, la, ha
+        m = vf_bits(hb)
+        return vf_rng(la & ~m, ha | m)
+    if o in ("slt", "slti", "sltu", "sltiu"):
+        return ("r", 0, 1)
+    if o in ("srl", "srlv") or (o in ("sra", "srav") and ha >> 31 == 0):
+        lb, hb = min(lb, 31), min(hb, 31)
+        if a is not None and b is not None and b[0] == "k" or lb == hb:
+            return vf_rng(la >> hb, ha >> lb)
+        return vf_rng(0, ha >> lb)
+    if o in ("sll", "sllv") and hb <= 31:
+        return vf_rng(la << lb, ha << hb)
+    return None
+
+
+def vf_insn(i, st):
+    """st after the non-control instruction i (st: list of 34 values)."""
+    o = i.op
+    if i.kind == "trap":
+        return [None] * 34 if o in ("syscall", "break") else st
+    w = [r for r in i.writes if r < 32]
+    if not w:
+        return st
+    d = w[0]
+    st = list(st)
+    imm = i.imm
+    v = None
+    if o == "lui":
+        v = ("k", frozenset([imm << 16]))
+    elif o in ("addi", "addiu", "slti", "sltiu"):
+        v = vf_op(o, st[i.rs], ("k", frozenset([s16(imm) & U32])))
+    elif o in ("andi", "ori", "xori"):
+        v = vf_op(o, st[i.rs], ("k", frozenset([imm])))
+    elif o in ("sll", "srl", "sra"):
+        v = vf_op(o, st[i.rt], ("k", frozenset([i.sa])))
+    elif o in ("sllv", "srlv", "srav"):
+        v = vf_op(o, st[i.rt], st[i.rs])
+    elif o in ("add", "addu", "sub", "subu", "and", "or", "xor", "nor",
+               "slt", "sltu"):
+        v = vf_op(o, st[i.rs], st[i.rt])
+    elif o == "lbu":
+        v = ("r", 0, 0xFF)
+    elif o == "lhu":
+        v = ("r", 0, 0xFFFF)
+    st[d] = v
+    return st
+
+
+def vf_scratch(i, st):
+    """The address range of memory instruction i if always in the
+    scratchpad, else None."""
+    n = MEM_SIZE.get(i.op)
+    if n is None:
+        return None
+    lo, hi = vf_range(st[i.rs])
+    off = s16(i.imm)
+    if lo + off >= SCR_LO and hi + off + n <= SCR_HI:
+        return lo + off, hi + off
+    return None
+
+
+def vf_taken(i):
+    """True / False for a branch on $zero alone, else None."""
+    if i.op in ("beq", "bne"):
+        if i.rs == i.rt:
+            return i.op == "beq"
+        return None
+    if i.rs != 0:
+        return None
+    return i.op in ("blez", "bgez", "bgezal")
+
+
+def value_flow(em, f, ins):
+    """({pc: True} for the scratchpad accesses, {label pc: {reg: const}})."""
+    at = {i.pc: k for k, i in enumerate(ins)}
+    n = len(ins)
+    TOP = [None] * 34
+    TOP[0] = ("k", frozenset([0]))
+    state = {}     # point pc -> state at its label / start
+    visits = {}
+    work = []
+    scr = {}       # pc -> joined address range seen, or False
+    labels = f.labels | em.local_rets
+
+    def flow(t, st):
+        if t is None or not (f.start <= t < f.end) or t not in at:
+            return
+        old = state.get(t)
+        if old is None:
+            new = list(st)
+        else:
+            new = [vf_join(a, b) for a, b in zip(old, st)]
+            if new == old:
+                return
+            visits[t] = visits.get(t, 0) + 1
+            if visits[t] > VF_WIDEN:
+                new = [a if a == b else None for a, b in zip(old, new)]
+        new[0] = ("k", frozenset([0]))
+        state[t] = new
+        work.append(t)
+
+    def note(i, st):
+        if i.op not in MEM_SIZE:
+            return
+        r = vf_scratch(i, st)
+        if scr.get(i.pc, True) is False:
+            return
+        scr[i.pc] = r if r is not None else False
+
+    def call(pc, st, link):
+        st = list(st)
+        st[RA] = ("k", frozenset([link]))
+        r = em.flow.call_sync(pc, em.written_mask, em.used_mask) \
+            if em.flow else None
+        if r is None:
+            return list(TOP)
+        for x in range(1, 32):
+            if r[1] >> x & 1:
+                st[x] = None
+        return st
+
+    def run_from(pc, st):
+        """straight-line from pc until a control transfer or a label"""
+        k = at[pc]
+        first = True
+        while k < n:
+            i = ins[k]
+            if not first and i.pc in labels:
+                flow(i.pc, st)
+                return
+            first = False
+            if i.kind in ("branch", "jump", "jal", "jr", "jalr"):
+                slot = ins[k + 1] if k + 1 < n else None
+                nxt = ins[k + 2].pc if k + 2 < n else None
+                before = st
+                if slot is not None:
+                    note(slot, st)
+                    after = vf_insn(slot, st)
+                else:
+                    after = st
+                if i.kind == "branch":
+                    tk = vf_taken(i)
+                    if i.op in ("bltzal", "bgezal"):
+                        s2 = list(after)
+                        s2[RA] = ("k", frozenset([i.pc + 8]))
+                        if i.pc + 8 not in em.local_rets and \
+                                not (f.start <= i.target < f.end and cond_c(i) == "1"):
+                            s2 = call(i.pc, after, i.pc + 8)
+                            if tk is not False:
+                                flow(nxt, s2)
+                        elif tk is not False:
+                            flow(i.target, s2)
+                        if tk is not True:
+                            flow(nxt, after)
+                    else:
+                        if tk is not False:
+                            flow(i.target, after)
+                        if tk is not True:
+                            flow(nxt, after)
+                elif i.kind == "jump":
+                    flow(i.target, after)
+                elif i.kind == "jal":
+                    if i.pc + 8 in em.local_rets:
+                        s2 = list(after)
+                        s2[RA] = ("k", frozenset([i.pc + 8]))
+                        flow(i.target, s2)
+                    else:
+                        flow(nxt, call(i.pc, after, i.pc + 8))
+                elif i.kind == "jalr":
+                    s2 = list(after)
+                    if i.rd:
+                        s2[i.rd] = ("k", frozenset([i.pc + 8]))
+                    flow(nxt, call(i.pc, s2, i.pc + 8))
+                elif i.kind == "jr":
+                    t = before[i.rs]
+                    cand = set(f.jr_targets)
+                    if i.rs == RA:
+                        cand |= em.ret_cases.get(i.pc, set())
+                    if t is not None and t[0] == "k":
+                        cand &= t[1]
+                    elif t is not None:
+                        cand = {c for c in cand if t[1] <= c <= t[2]}
+                    for c in cand:
+                        flow(c, after)
+                if slot is not None and slot.pc in f.labels:
+                    pass  # its own copy: a point of its own (below)
+                return
+            nx = ins[k + 1] if k + 1 < n else None
+            if i.load and nx is not None and nx.kind not in (
+                    "branch", "jump", "jal", "jr", "jalr", "trap") and \
+                    em.load_hazard(i, nx) and nx.pc not in f.labels:
+                note(i, st)
+                s2 = list(st)
+                for r in i.writes:
+                    if r < 32:
+                        s2[r] = None  # the next one sees the old value
+                note(nx, s2)
+                s2 = vf_insn(nx, s2)
+                for r in i.writes | nx.writes:
+                    if r < 32:
+                        s2[r] = None
+                st = s2
+                k += 2
+                continue
+            note(i, st)
+            st = vf_insn(i, st)
+            k += 1
+        # falls out of the function
+
+    def vf_join_st(a, b):
+        return [vf_join(x, y) for x, y in zip(a, b)]
+
+    for k, e in enumerate(f.entries):
+        if e not in em.inside_only:
+            flow(e, TOP)
+    # a delay slot something jumps into has its own copy, falling into pc+8
+    slot_pts = set()
+    for k, i in enumerate(ins):
+        if i.kind in ("branch", "jump", "jal", "jr", "jalr") and k + 1 < n and \
+                ins[k + 1].pc in f.labels:
+            slot_pts.add(ins[k + 1].pc)
+    while work:
+        pc = work.pop()
+        st = state[pc]
+        if pc in slot_pts:
+            i = ins[at[pc]]
+            note(i, st)
+            s2 = vf_insn(i, st)
+            nxt = ins[at[pc] + 1].pc if at[pc] + 1 < n else None
+            flow(nxt, s2)
+            continue
+        run_from(pc, st)
+    consts = {}
+    for pc, st in state.items():
+        c = {r: next(iter(v[1])) for r, v in enumerate(st)
+             if r and v is not None and v[0] == "k" and len(v[1]) == 1}
+        if c:
+            consts[pc] = c
+    return {pc for pc, r in scr.items() if r}, consts
+
+
 # ---------------------------------------------------------------- emitting --
 
 def fname(a):
@@ -1359,6 +1710,9 @@ class Emitter:
                             e not in self.hle and not any(
                                 not (f.start <= r < f.end) for r in refs.get(e, ())):
                         self.inside_only.add(e)
+        self.ret_cases = self.local_returns(f, ins) if self.local_rets else {}
+        global KNOWN_SCRATCH
+        KNOWN_SCRATCH, self.label_consts = value_flow(self, f, ins)             if VALUE_FLOW and not SITE_PROFILE else (set(), {})
         out = []
         nm = self.names.get(f.start)
         out.append("/* %s */" % nm if nm else "")
@@ -1387,6 +1741,8 @@ class Emitter:
                 out.append("L_%08X:;" % i.pc)
             if i.pc in self.local_rets:
                 out.append("R_%08X:;" % i.pc)
+            if i.pc in f.labels or i.pc in self.local_rets:
+                out.extend(self.label_known(i.pc))
             if i.kind in ("branch", "jump", "jal", "jr", "jalr"):
                 slot = ins[k + 1] if k + 1 < n else None
                 out.extend(self.control(i, slot))
@@ -1395,6 +1751,7 @@ class Emitter:
                     # its own sequential copy
                     out.append("    goto L_%08X_after;" % slot.pc)
                     out.append("L_%08X:;" % slot.pc)
+                    out.extend(self.label_known(slot.pc))
                     out.extend(self.plain(slot, ins[k + 2] if k + 2 < n else None))
                     out.append("L_%08X_after:;" % slot.pc)
                 k += 2
@@ -1435,6 +1792,76 @@ class Emitter:
                 out.append("void %s(void) { b_%08X(%d); }%s" % (
                     fname(e), f.start, k, " /* %s */" % nm if nm else ""))
         return "\n".join(out)
+
+    def local_returns(self, f, ins):
+        """{jr $ra pc: the local return sites it can go back to}: those of
+        the local calls whose entry reaches it, a local call counting as
+        coming back to its own return site"""
+        at = {i.pc: k for k, i in enumerate(ins)}
+        n = len(ins)
+        ctl = ("branch", "jump", "jal", "jr", "jalr")
+        slots = {ins[k + 1].pc for k, i in enumerate(ins)
+                 if i.kind in ctl and k + 1 < n}
+
+        def succ(pc):
+            k = at[pc]
+            i = ins[k]
+            nxt = ins[k + 2].pc if k + 2 < n else None
+            if pc in slots:  # a delay slot's own copy (jumped into)
+                return [ins[k + 1].pc] if k + 1 < n else []
+            if i.kind not in ctl:
+                return [ins[k + 1].pc] if k + 1 < n else []
+            inside = lambda t: t is not None and f.start <= t < f.end and t in at
+            if i.kind == "branch":
+                tk = vf_taken(i)
+                if i.op in ("bltzal", "bgezal"):
+                    return [nxt]
+                out = []
+                if tk is not False and inside(i.target):
+                    out.append(i.target)
+                if tk is not True:
+                    out.append(nxt)
+                return out
+            if i.kind == "jump":
+                return [i.target] if inside(i.target) else []
+            if i.kind in ("jal", "jalr"):
+                return [nxt]
+            if i.rs == RA:
+                return []
+            return list(f.jr_targets)
+
+        reach_cache = {}
+
+        def rets_from(e):
+            if e in reach_cache:
+                return reach_cache[e]
+            seen = {e}
+            work = [e]
+            found = set()
+            while work:
+                pc = work.pop()
+                i = ins[at[pc]]
+                if i.kind == "jr" and i.rs == RA:
+                    found.add(pc)
+                for t in succ(pc):
+                    if t is not None and t in at and t not in seen:
+                        seen.add(t)
+                        work.append(t)
+            reach_cache[e] = found
+            return found
+
+        cases = {}
+        for r in self.local_rets:
+            for jr in rets_from(self.insns[r - 8].target):
+                cases.setdefault(jr, set()).add(r)
+        return cases
+
+    def label_known(self, pc):
+        """the scratchpad addresses value_flow says registers hold here,
+        for the C compiler (it cannot see through the joins)"""
+        c = self.label_consts.get(pc, {})
+        return ["    r%d = 0x%08Xu; /* known */" % (r, v) for r, v in sorted(c.items())
+                if r in self.regs and SCR_LO <= v < SCR_HI]
 
     def outside_refs(self):
         """target -> the pcs of the calls and jumps to it"""
@@ -1623,10 +2050,11 @@ class Emitter:
             out.extend(slot_c)
             f = self.f
             if i.rs == RA:
-                if self.local_rets:
+                rets = self.ret_cases.get(pc)
+                if rets:
                     out.append("    switch (t_) { %s}" % "".join(
                         "case 0x%08Xu: goto R_%08X; " % (r, r)
-                        for r in sorted(self.local_rets)))
+                        for r in sorted(rets)))
                 ret = self.sync_out_mask(self.flow.ret_sync(f, self.written_mask)) \
                     if self.flow else self.sync_out()
                 out.append("    if (t_ == ra_in) { %sreturn; }" % ret)
@@ -1670,8 +2098,11 @@ def main():
     ap.add_argument("--sites", action="store_true",
                     help="every access reports its site and address (RT_SITES "
                          "builds), to measure --scratch-sites")
+    ap.add_argument("--no-value-flow", action="store_true",
+                    help="no value_flow: every access checks its address")
     args = ap.parse_args()
-    global SITE_PROFILE
+    global SITE_PROFILE, VALUE_FLOW
+    VALUE_FLOW = not args.no_value_flow
     SITE_PROFILE = args.sites
     if args.scratch_sites:
         for line in open(args.scratch_sites):

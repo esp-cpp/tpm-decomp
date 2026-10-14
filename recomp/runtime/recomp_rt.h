@@ -140,6 +140,25 @@ RT_ACCESS uint32_t LBs(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBUs(a); 
     }
 RT_STORES(RT_STORE_FNS)
 
+/* And the sites the recompiler proved always reach the scratchpad (its
+ * value flow: a base register that holds 0x1F800000 plus a bounded offset):
+ * no check at all. RT_DEBUG builds check the proof. */
+#ifdef RT_DEBUG
+void rt_known_miss(uint32_t a);
+#define SCR_KNOWN(a, n) (((a) - 0x1F800000u <= SCRATCH_SIZE - (n)) ? (void)0 : rt_known_miss(a), \
+                         (a) - 0x1F800000u)
+#else
+#define SCR_KNOWN(a, n) ((a) - 0x1F800000u)
+#endif
+RT_ACCESS uint32_t LWk(uint32_t a) { return SCR32(SCR_KNOWN(a, 4)); }
+RT_ACCESS uint32_t LHUk(uint32_t a) { return SCR16(SCR_KNOWN(a, 2)); }
+RT_ACCESS uint32_t LBUk(uint32_t a) { return SCR8(SCR_KNOWN(a, 1)); }
+RT_ACCESS uint32_t LHk(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LHUk(a); }
+RT_ACCESS uint32_t LBk(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBUk(a); }
+RT_ACCESS void SWk(uint32_t a, uint32_t v) { SCR32(SCR_KNOWN(a, 4)) = v; }
+RT_ACCESS void SHk(uint32_t a, uint32_t v) { SCR16(SCR_KNOWN(a, 2)) = (uint16_t)v; }
+RT_ACCESS void SBk(uint32_t a, uint32_t v) { SCR8(SCR_KNOWN(a, 1)) = (uint8_t)v; }
+
 /* unaligned word access, little-endian R3000 semantics */
 #define RT_UNALIGNED(SFX)                                                         \
     RT_INLINE uint32_t LWL##SFX(uint32_t a, uint32_t rt) {                        \

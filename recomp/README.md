@@ -24,6 +24,14 @@ player overlay, your disc image).
   honoured; `jr $ra` returns, other `jr`/`jalr` go through a switch over the
   function's address-taken labels or the runtime's dispatcher. GTE
   instructions call psyz's software GTE.
+- **Memory accesses**: each load and store checks where its address lands
+  (RAM, else the scratchpad, else I/O). A value flow over each function (a
+  few constants or an unsigned range per register, following the C the
+  recompiler writes) proves the accesses that always reach the scratchpad,
+  and those skip the check (`LWk`, ...; `RT_DEBUG` builds verify the proof).
+  A local call's `jr $ra` goes back only to the return sites of the calls
+  whose entry reaches it (anything else reaches `rt_jump_ra`, which reports
+  it). `--no-value-flow` turns it off for comparisons.
 - **Time**: every loop back-edge counts down a budget; at zero the runtime
   advances its clock, runs the hardware (vblank, CD, SPU) and takes
   interrupts there.
