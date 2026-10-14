@@ -100,6 +100,7 @@ extern uint32_t g_rt_gpu_split, g_rt_gpu_barriers; /* two workers: telemetry */
 void rt_gpu_set_frameskip(int max);
 extern uint32_t g_rt_gpu_skipped;
 extern uint64_t g_rt_gpu_wait_us[2];
+extern uint64_t g_rt_gpu_prod_wait_us; /* the CPU's thread waiting for the queue */
 
 void rt_gpu_display(RtDisplay* d);
 /* Record the GPU's command stream of vblanks [from, from + frames) to a file

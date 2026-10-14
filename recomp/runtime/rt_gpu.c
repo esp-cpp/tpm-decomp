@@ -105,6 +105,7 @@ static uint32_t ring_w, ring_r[2]; /* entries; producer / each worker (published
 static uint32_t ring_r_local[2];   /* each worker's own position */
 static int async_on;               /* 0: drawing on the CPU's thread; 1, 2 workers */
 static volatile int prod_wait;     /* the CPU's thread waits for ring space */
+uint64_t g_rt_gpu_prod_wait_us;    /* ... and its time doing so (benchmarks) */
 
 typedef struct {
     uint32_t cmd[16];
@@ -628,7 +629,9 @@ static void ring_push(uint32_t kind, uint32_t v) {
     if (w - ring_tail() >= RING_ENTRIES) { /* full: wait for the workers */
         plat_gpu_kick();
         prod_wait = 1;
+        const uint64_t t0 = plat_time_us();
         while (w - ring_tail() >= RING_ENTRIES) plat_gpu_idle();
+        g_rt_gpu_prod_wait_us += plat_time_us() - t0;
         prod_wait = 0;
     }
     uint32_t i = (w & (RING_ENTRIES - 1)) * 2;
@@ -649,7 +652,9 @@ static void gpu_drain(void) {
     plat_gpu_kick();
     if (ring_tail() != ring_w) {
         prod_wait = 1;
+        const uint64_t t0 = plat_time_us();
         while (ring_tail() != ring_w) plat_gpu_idle();
+        g_rt_gpu_prod_wait_us += plat_time_us() - t0;
         prod_wait = 0;
     }
 }
@@ -860,7 +865,9 @@ void gpu_gp0_words(const uint32_t* w, uint32_t n) {
     if (wp + n - ring_tail() > RING_ENTRIES) {
         plat_gpu_kick();
         prod_wait = 1;
+        const uint64_t t0 = plat_time_us();
         while (wp + n - ring_tail() > RING_ENTRIES) plat_gpu_idle();
+        g_rt_gpu_prod_wait_us += plat_time_us() - t0;
         prod_wait = 0;
     }
     for (uint32_t i = 0; i < n; i++) {
