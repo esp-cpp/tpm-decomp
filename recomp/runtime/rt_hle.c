@@ -52,11 +52,15 @@ void hle_vblank(void) {
  * the board's game thread was this loop). */
 void o_80060D38(void); /* the recompiled VSync */
 void hle_VSync(void) {
-    /* only the frame limiter (0x800110F8): libcd and libgpu poll VSync(-1)
-     * for their timeouts while they wait on hardware, and skipping there
+    /* the frame limiter (0x800110F8), and libcd's wait for a command to
+     * finish (0x8006DB58, which the loader calls in a loop: 8000 turns a
+     * frame, the level load took 25 s on the board instead of 7): the step
+     * stops at the first interrupt, the CD's included. Not the other libcd
+     * and libgpu polls of VSync(-1) for their timeouts: skipping those
      * broke the display */
     uint32_t ra = g_cpu.r[31];
-    if ((int32_t)A0 < 0 && (ra == 0x80011128u || ra == 0x80011184u)) hw_vsync_poll();
+    if ((int32_t)A0 < 0 && (ra == 0x80011128u || ra == 0x80011184u || ra == 0x8006DBE0u))
+        hw_vsync_poll();
     o_80060D38();
 }
 
