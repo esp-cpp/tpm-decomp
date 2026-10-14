@@ -1335,6 +1335,17 @@ class Emitter:
             sum(1 << r for r in self.hilo if r in written)
         self.used_mask = mask(regs) | sum(1 << r for r in self.hilo)
         self.f = f
+        # calls to an entry of this same function stay in it: a jump, and
+        # its `jr $ra` comes back through the return address (no registers
+        # through g_cpu)
+        self.local_rets = set()
+        if len(f.entries) > 1 and not (self.check or self.poison):
+            reach = {i.pc for i in ins}
+            for i in ins:
+                t = i.target if (i.kind == "jal" or i.op in ("bltzal", "bgezal")) else None
+                if t is not None and t in f.entries and f.start <= t < f.end and \
+                        i.pc + 8 in reach:
+                    self.local_rets.add(i.pc + 8)
         out = []
         nm = self.names.get(f.start)
         out.append("/* %s */" % nm if nm else "")
@@ -1360,6 +1371,8 @@ class Emitter:
             i = ins[k]
             if i.pc in f.labels:
                 out.append("L_%08X:;" % i.pc)
+            if i.pc in self.local_rets:
+                out.append("R_%08X:;" % i.pc)
             if i.kind in ("branch", "jump", "jal", "jr", "jalr"):
                 slot = ins[k + 1] if k + 1 < n else None
                 out.extend(self.control(i, slot))
@@ -1534,6 +1547,11 @@ class Emitter:
                 out.append("    /* %08X */ %s" % (pc, link))
                 out.extend(slot_c)
                 out.append("    " + self.jump_to(i.target, pc))
+            elif link and pc + 8 in self.local_rets:
+                out.append("    /* %08X */ { int c_ = %s;" % (pc, cond))
+                out.extend(slot_c)
+                out.append("    if (c_) { r31 = 0x%08Xu; goto L_%08X; } }" % (
+                    pc + 8, i.target))
             elif link:
                 # a conditional call
                 out.append("    /* %08X */ { int c_ = %s;" % (pc, cond))
@@ -1553,6 +1571,10 @@ class Emitter:
         if i.kind == "jump":
             out.extend(slot_c)
             out.append("    /* %08X */ %s" % (pc, self.jump_to(i.target, pc)))
+            return out
+        if i.kind == "jal" and pc + 8 in self.local_rets:
+            out.extend(slot_c)
+            out.append("    /* %08X */ r31 = 0x%08Xu; goto L_%08X;" % (pc, pc + 8, i.target))
             return out
         if i.kind == "jal":
             out.extend(slot_c)
@@ -1577,6 +1599,10 @@ class Emitter:
             out.extend(slot_c)
             f = self.f
             if i.rs == RA:
+                if self.local_rets:
+                    out.append("    switch (t_) { %s}" % "".join(
+                        "case 0x%08Xu: goto R_%08X; " % (r, r)
+                        for r in sorted(self.local_rets)))
                 ret = self.sync_out_mask(self.flow.ret_sync(f, self.written_mask)) \
                     if self.flow else self.sync_out()
                 out.append("    if (t_ == ra_in) { %sreturn; }" % ret)
