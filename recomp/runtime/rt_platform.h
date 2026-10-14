@@ -72,6 +72,17 @@ void plat_pause_wait(void);
 /* Load a PS-X EXE into guest RAM and run it. Returns only after
  * rt_request_exit(). */
 void rt_boot(const uint8_t* exe, uint32_t size);
+/* What rt_boot will take from plat_alloc: bytes, and in *count allocations.
+ * The order of the allocations is fixed. */
+uint32_t rt_mem_bytes(int* count);
+/* Save states, which the platform takes while the game's thread waits in
+ * plat_pause_wait (a snapshot of the runtime's statics, plat_alloc's memory
+ * and that thread's stack, restored at the same addresses). The rasterizer's
+ * caches are this run's heap memory: rt_snap_preserve lists the statics
+ * that point at them (up to max), whose values the platform keeps across a
+ * restore; then rt_snap_restored() marks the caches stale. */
+int rt_snap_preserve(void*** out, int max);
+void rt_snap_restored(void);
 /* After rt_boot returned: release everything the runtime allocated. */
 void rt_shutdown(void);
 /* Ask the game's thread to leave rt_boot at its next poll. */

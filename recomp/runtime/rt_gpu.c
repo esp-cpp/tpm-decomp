@@ -247,6 +247,45 @@ int gpu_alloc(void) {
     return g_rt_vram != NULL;
 }
 
+/* what gpu_alloc and gpu_reset take from plat_alloc: (bytes, count) */
+uint32_t gpu_mem_bytes(int* count) {
+    uint32_t n = VRAM_W * VRAM_H * 2;              /* VRAM */
+    n += VRAM_W * VRAM_H * 2 + 4;                  /* transfers */
+    n += RING_ENTRIES * 2 * sizeof(uint32_t);      /* the async queue (if any) */
+    *count += 3;
+#ifdef SOFT_TILED_TEX
+    n += VRAM_W * VRAM_H * 2;                      /* the tiled texture shadow */
+    *count += 1;
+#endif
+    return n;
+}
+
+/* Save states (the platform's): the rasterizer's caches are heap memory of
+ * this run, held in statics a restore overwrites. The platform keeps these
+ * pointers across the restore, then rt_snap_restored() marks every cache
+ * stale (their contents describe the VRAM before it). */
+int rt_snap_preserve(void*** out, int max) {
+    int n = 0;
+#ifdef ESP_PLATFORM
+    void** clut = Draw_ClutCacheSlot();
+    for (int i = 0; i < 2 && n < max; i++) out[n++] = &clut[i];
+    int mips = 0;
+    void** mip = Draw_MipSlot(&mips);
+    for (int i = 0; i < mips && n < max; i++) out[n++] = &mip[i];
+    if (n < max) out[n++] = Draw_MipGenSlot();
+    if (n < max) out[n++] = Draw_TiledSlot();
+#else
+    (void)out;
+    (void)max;
+#endif
+    return n;
+}
+void rt_snap_restored(void) {
+#ifdef ESP_PLATFORM
+    Draw_FlushCaches();
+#endif
+}
+
 void gpu_free(void) {
     gpu_drain();
     plat_free(ring);

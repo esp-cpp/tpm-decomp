@@ -383,6 +383,21 @@ void rt_entry_outside(uint32_t entry) {
 }
 
 /* ---- boot ---- */
+/* everything rt_boot takes from plat_alloc, in bytes and allocations (the
+ * platform adds its own alignment to each), so a platform can set aside one
+ * block for it */
+uint32_t gpu_mem_bytes(int* count);
+size_t Psyz_SpuStateSize(void);
+uint32_t rt_mem_bytes(int* count) {
+    *count = 1;
+    uint32_t n = RAM_ALLOC + gpu_mem_bytes(count);
+#ifdef ESP_PLATFORM
+    n += (uint32_t)Psyz_SpuStateSize();
+    *count += 1;
+#endif
+    return n;
+}
+
 void rt_shutdown(void) {
     hw_free();
     plat_free(g_ram);
