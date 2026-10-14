@@ -104,8 +104,119 @@ static inline void set_ir123(int lm, uint32_t* flag) {
     G->ir[3] = ir_sat(G->mac[3], lm, FLAG_IR3_SAT, flag);
 }
 
+/* ---- 32-bit fast paths ----
+ * RV32 has no 64-bit arithmetic: a 44-bit MAC sum is a chain of carries and
+ * its overflow checks are 64-bit compares. Instead, (T << 12) + the three
+ * products is carried as q = T + (products >> 12) and the low 12 bits, all
+ * in 32 bits: the sum is within the 44-bit range exactly when q fits in 32
+ * bits, and then needs no wrap. When it does not, the 64-bit code runs. */
+typedef struct {
+    int32_t q;   /* sum >> 12 */
+    uint32_t lo; /* sum & 0xFFF */
+} Mac32;
+static inline int mac32(int32_t t, int32_t p0, int32_t p1, int32_t p2, Mac32* r) {
+    const uint32_t lo = (uint32_t)(p0 & 0xFFF) + (uint32_t)(p1 & 0xFFF) + (uint32_t)(p2 & 0xFFF);
+    const int32_t hi = (p0 >> 12) + (p1 >> 12) + (p2 >> 12) + (int32_t)(lo >> 12);
+    r->lo = lo & 0xFFF;
+    return !__builtin_add_overflow(t, hi, &r->q);
+}
+/* the MAC register: sum >> 12 (sf) or the sum's low 32 bits */
+static inline int32_t mac32_reg(const Mac32* m, int sf) {
+    return sf ? m->q : (int32_t)(((uint32_t)m->q << 12) | m->lo);
+}
+
 /* ---- RTPS / RTPT ---- */
+static inline void rtps_slow(int k, int sf, int lm, int depth_cue, uint32_t* flag);
 static inline void rtps(int k, int sf, int lm, int depth_cue, uint32_t* flag) {
+    RtGte* g = G;
+    const int vx = g->v[k][0], vy = g->v[k][1], vz = g->v[k][2];
+    Mac32 a, b, c;
+    if (__builtin_expect(!mac32(g->tr[0], g->rt[0][0] * vx, g->rt[0][1] * vy, g->rt[0][2] * vz, &a) ||
+                         !mac32(g->tr[1], g->rt[1][0] * vx, g->rt[1][1] * vy, g->rt[1][2] * vz, &b) ||
+                         !mac32(g->tr[2], g->rt[2][0] * vx, g->rt[2][1] * vy, g->rt[2][2] * vz, &c),
+                         0)) {
+        rtps_slow(k, sf, lm, depth_cue, flag);
+        return;
+    }
+    const int32_t mac1 = mac32_reg(&a, sf), mac2 = mac32_reg(&b, sf), mac3 = mac32_reg(&c, sf);
+    g->mac[1] = mac1;
+    g->mac[2] = mac2;
+    g->mac[3] = mac3;
+    const int16_t ir1 = ir_sat(mac1, lm, FLAG_IR1_SAT, flag);
+    const int16_t ir2 = ir_sat(mac2, lm, FLAG_IR2_SAT, flag);
+    g->ir[1] = ir1;
+    g->ir[2] = ir2;
+    const int32_t z12 = c.q;
+    {
+        int32_t v = mac3;
+        if (z12 < -0x8000 || z12 > 0x7FFF) *flag |= FLAG_IR3_SAT;
+        const int32_t lo = lm ? 0 : -0x8000;
+        if (v < lo) v = lo;
+        if (v > 0x7FFF) v = 0x7FFF;
+        g->ir[3] = (int16_t)v;
+    }
+    g->sz[0] = g->sz[1];
+    g->sz[1] = g->sz[2];
+    g->sz[2] = g->sz[3];
+    int32_t szv = z12;
+    if (szv < 0 || szv > 0xFFFF) {
+        *flag |= FLAG_SZ3_OTZ_SAT;
+        szv = szv < 0 ? 0 : 0xFFFF;
+    }
+    g->sz[3] = (uint16_t)szv;
+    const int32_t div = (int32_t)gte_divide(g->h, (uint32_t)szv, flag);
+    g->sx[0] = g->sx[1]; g->sy[0] = g->sy[1];
+    g->sx[1] = g->sx[2]; g->sy[1] = g->sy[2];
+    /* MAC0 = div * IR + offset: in 32 bits while div < 0x10000 (|product|
+     * < 2^31) and the sum does not overflow (which would flag MAC0) */
+    int32_t m0x, m0y;
+    if (__builtin_expect(div > 0xFFFF || __builtin_add_overflow(div * ir1, g->ofx, &m0x) ||
+                             __builtin_add_overflow(div * ir2, g->ofy, &m0y), 0)) {
+        s64 mac0 = (s64)div * ir1 + (s64)g->ofx;
+        g->mac[0] = mac0_check(mac0, flag);
+        m0x = (int32_t)(mac0 >> 16);
+        mac0 = (s64)div * ir2 + (s64)g->ofy;
+        g->mac[0] = mac0_check(mac0, flag);
+        m0y = (int32_t)(mac0 >> 16);
+    } else {
+        g->mac[0] = m0y;
+        m0x >>= 16;
+        m0y >>= 16;
+    }
+    if (m0x < -0x400 || m0x > 0x3FF) {
+        *flag |= FLAG_SX2_SAT;
+        m0x = m0x < -0x400 ? -0x400 : 0x3FF;
+    }
+    if (m0y < -0x400 || m0y > 0x3FF) {
+        *flag |= FLAG_SY2_SAT;
+        m0y = m0y < -0x400 ? -0x400 : 0x3FF;
+    }
+    g->sx[2] = g->sx[3] = (int16_t)m0x;
+    g->sy[2] = g->sy[3] = (int16_t)m0y;
+    if (depth_cue) {
+        int32_t m0;
+        if (__builtin_expect(div > 0xFFFF || __builtin_add_overflow(div * g->dqa, g->dqb, &m0), 0)) {
+            const s64 m = (s64)div * g->dqa + (s64)g->dqb;
+            g->mac[0] = mac0_check(m, flag);
+            int32_t ir0 = (int32_t)(m >> 12);
+            if (ir0 < 0 || ir0 > 0x1000) {
+                *flag |= FLAG_IR0_SAT;
+                ir0 = ir0 < 0 ? 0 : 0x1000;
+            }
+            g->ir[0] = (int16_t)ir0;
+        } else {
+            g->mac[0] = m0;
+            int32_t ir0 = m0 >> 12;
+            if (ir0 < 0 || ir0 > 0x1000) {
+                *flag |= FLAG_IR0_SAT;
+                ir0 = ir0 < 0 ? 0 : 0x1000;
+            }
+            g->ir[0] = (int16_t)ir0;
+        }
+    }
+}
+
+static inline void rtps_slow(int k, int sf, int lm, int depth_cue, uint32_t* flag) {
     RtGte* g = G;
     const int vx = g->v[k][0], vy = g->v[k][1], vz = g->v[k][2];
     /* each product fits in 32 bits; the sums with TR << 12 need 44 */
@@ -209,6 +320,16 @@ static void mat_vec(int sf, int lm, int mx, int vx, int cv, uint32_t* flag) {
         m2 = (s64)(mp[1][1] * y) + (s64)(mp[1][2] * z);
         m3 = (s64)(mp[2][1] * y) + (s64)(mp[2][2] * z);
     } else {
+        Mac32 a, b, c;
+        if (LIKELY(mac32(t1, mp[0][0] * x, mp[0][1] * y, mp[0][2] * z, &a) &&
+                   mac32(t2, mp[1][0] * x, mp[1][1] * y, mp[1][2] * z, &b) &&
+                   mac32(t3, mp[2][0] * x, mp[2][1] * y, mp[2][2] * z, &c))) {
+            g->mac[1] = mac32_reg(&a, sf);
+            g->mac[2] = mac32_reg(&b, sf);
+            g->mac[3] = mac32_reg(&c, sf);
+            set_ir123(lm, flag);
+            return;
+        }
         m1 = ((s64)t1 << 12) + (s64)(mp[0][0] * x) + (s64)(mp[0][1] * y) + (s64)(mp[0][2] * z);
         m2 = ((s64)t2 << 12) + (s64)(mp[1][0] * x) + (s64)(mp[1][1] * y) + (s64)(mp[1][2] * z);
         m3 = ((s64)t3 << 12) + (s64)(mp[2][0] * x) + (s64)(mp[2][1] * y) + (s64)(mp[2][2] * z);
