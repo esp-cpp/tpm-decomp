@@ -628,30 +628,36 @@ void rt_gpu_worker_n(volatile int* stop, int idx) {
             continue;
         }
         if (!busy_since) busy_since = plat_time_us();
-        uint32_t i = (r & (RING_ENTRIES - 1)) * 2;
-        uint32_t kind = ring[i], v = ring[i + 1];
-        if (kind == Q_GP0) {
-            gp0_exec(p, v);
-        } else if (kind == Q_GP1) {
-            gp1_exec(p, v);
-        } else {
-            if (busy_since) { /* the rendezvous is not work */
-                uint64_t d = plat_time_us() - busy_since;
-                busy_us[idx] += d;
-                if (idx == 1) g_rt_prof.gpu += d;
+        /* everything queued so far, without an acquire load per entry (a
+         * fence on this core); the read position is published every 32
+         * entries and at the end (a release store is a fence too) */
+        const uint32_t end = ring_load(&ring_w);
+        while (r != end) {
+            const uint32_t i = (r & (RING_ENTRIES - 1)) * 2;
+            const uint32_t kind = ring[i], v = ring[i + 1];
+            if (kind == Q_GP0) {
+                gp0_exec(p, v);
+            } else if (kind == Q_GP1) {
+                gp1_exec(p, v);
+            } else {
+                if (busy_since) { /* the rendezvous is not work */
+                    uint64_t d = plat_time_us() - busy_since;
+                    busy_us[idx] += d;
+                    if (idx == 1) g_rt_prof.gpu += d;
+                }
+                vblank_marker(kind, v);
+                busy_since = plat_time_us();
+                __atomic_store_n(&ring_r[idx], r + 1, __ATOMIC_RELEASE);
             }
-            vblank_marker(kind, v);
-            busy_since = plat_time_us();
+            r++;
+            if ((r & 31) == 0) {
+                __atomic_store_n(&ring_r[idx], r, __ATOMIC_RELEASE);
+                if (prod_wait && (r & 1023) == 0) plat_gpu_wake_producer();
+            }
         }
-        /* the read position is published every 32 entries (a release store
-         * is a fence on this core: one per word cost the GPU worker ~3%), and
-         * whenever the ring runs dry or a rendezvous / vblank passed */
-        r++;
         ring_r_local[idx] = r;
-        if ((r & 31) == 0 || kind == Q_VBLANK || r == ring_load(&ring_w)) {
-            __atomic_store_n(&ring_r[idx], r, __ATOMIC_RELEASE);
-            if (prod_wait && (r & 1023) < 32) plat_gpu_wake_producer();
-        }
+        __atomic_store_n(&ring_r[idx], r, __ATOMIC_RELEASE);
+        if (prod_wait) plat_gpu_wake_producer();
     }
 }
 void rt_gpu_worker(volatile int* stop) { rt_gpu_worker_n(stop, 1); }
