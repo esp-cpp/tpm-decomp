@@ -40,6 +40,10 @@ void rt_gte_reset(void) {
 
 /* the flag word is built in a local and stored once per command */
 #define LIKELY(x) __builtin_expect(!!(x), 1)
+/* (the fast paths are inlined into each command word, the overflow paths
+ * are not) */
+#define GTE_FAST static inline __attribute__((always_inline))
+#define GTE_SLOW static __attribute__((noinline))
 
 static const uint8_t unr_table[257] = {
     0xFF, 0xFD, 0xFB, 0xF9, 0xF7, 0xF5, 0xF3, 0xF1, 0xEF, 0xEE, 0xEC, 0xEA,
@@ -69,7 +73,7 @@ static const uint8_t unr_table[257] = {
 /* the leading zeros of a 16-bit value (1..0xFFFF) as a 16-bit number. An
  * RV32 core without Zbb (the P4) calls the library for __builtin_clz; the
  * exponent of the value as a float is the same answer in three instructions */
-static inline uint32_t clz16(uint32_t v) {
+GTE_FAST uint32_t clz16(uint32_t v) {
 #if defined(__riscv) && !defined(__riscv_zbb) && defined(__riscv_flen)
     const float f = (float)v;
     uint32_t b;
@@ -80,7 +84,7 @@ static inline uint32_t clz16(uint32_t v) {
 #endif
 }
 
-static inline uint32_t gte_divide(uint32_t h, uint32_t sz3, uint32_t* flag) {
+GTE_FAST uint32_t gte_divide(uint32_t h, uint32_t sz3, uint32_t* flag) {
     if (h >= sz3 * 2) {
         *flag |= FLAG_DIV_OVF;
         return 0x1FFFF;
@@ -95,26 +99,26 @@ static inline uint32_t gte_divide(uint32_t h, uint32_t sz3, uint32_t* flag) {
     return r > 0x1FFFFu ? 0x1FFFFu : (uint32_t)r;
 }
 
-static inline s64 mac44(s64 v, int i, uint32_t* flag) {
+GTE_FAST s64 mac44(s64 v, int i, uint32_t* flag) {
     if (__builtin_expect(v > 0x7FFFFFFFFFFLL, 0)) *flag |= FLAG_MAC1_OVF_POS >> i;
     if (__builtin_expect(v < -0x80000000000LL, 0)) *flag |= FLAG_MAC1_OVF_NEG >> i;
     return (s64)((uint64_t)v << 20) >> 20;
 }
-static inline int32_t mac0_check(s64 v, uint32_t* flag) {
+GTE_FAST int32_t mac0_check(s64 v, uint32_t* flag) {
     if (v > 0x7FFFFFFFLL) *flag |= FLAG_MAC0_OVF_POS;
     if (v < -0x80000000LL) *flag |= FLAG_MAC0_OVF_NEG;
     return (int32_t)v;
 }
-static inline int16_t ir_sat(int32_t v, int lm, uint32_t satflag, uint32_t* flag) {
+GTE_FAST int16_t ir_sat(int32_t v, int lm, uint32_t satflag, uint32_t* flag) {
     const int32_t lo = lm ? 0 : -0x8000;
     if (v < lo) { *flag |= satflag; return (int16_t)lo; }
     if (v > 0x7FFF) { *flag |= satflag; return 0x7FFF; }
     return (int16_t)v;
 }
-static inline int16_t sat_s16(int32_t v) {
+GTE_FAST int16_t sat_s16(int32_t v) {
     return (int16_t)(v < -0x8000 ? -0x8000 : v > 0x7FFF ? 0x7FFF : v);
 }
-static inline void set_ir123(int lm, uint32_t* flag) {
+GTE_FAST void set_ir123(int lm, uint32_t* flag) {
     G->ir[1] = ir_sat(G->mac[1], lm, FLAG_IR1_SAT, flag);
     G->ir[2] = ir_sat(G->mac[2], lm, FLAG_IR2_SAT, flag);
     G->ir[3] = ir_sat(G->mac[3], lm, FLAG_IR3_SAT, flag);
@@ -130,20 +134,20 @@ typedef struct {
     int32_t q;   /* sum >> 12 */
     uint32_t lo; /* sum & 0xFFF */
 } Mac32;
-static inline int mac32(int32_t t, int32_t p0, int32_t p1, int32_t p2, Mac32* r) {
+GTE_FAST int mac32(int32_t t, int32_t p0, int32_t p1, int32_t p2, Mac32* r) {
     const uint32_t lo = (uint32_t)(p0 & 0xFFF) + (uint32_t)(p1 & 0xFFF) + (uint32_t)(p2 & 0xFFF);
     const int32_t hi = (p0 >> 12) + (p1 >> 12) + (p2 >> 12) + (int32_t)(lo >> 12);
     r->lo = lo & 0xFFF;
     return !__builtin_add_overflow(t, hi, &r->q);
 }
 /* the MAC register: sum >> 12 (sf) or the sum's low 32 bits */
-static inline int32_t mac32_reg(const Mac32* m, int sf) {
+GTE_FAST int32_t mac32_reg(const Mac32* m, int sf) {
     return sf ? m->q : (int32_t)(((uint32_t)m->q << 12) | m->lo);
 }
 
 /* ---- RTPS / RTPT ---- */
-static inline void rtps_slow(int k, int sf, int lm, int depth_cue, uint32_t* flag);
-static inline void rtps(int k, int sf, int lm, int depth_cue, uint32_t* flag) {
+GTE_SLOW void rtps_slow(int k, int sf, int lm, int depth_cue, uint32_t* flag);
+GTE_FAST void rtps(int k, int sf, int lm, int depth_cue, uint32_t* flag) {
     RtGte* g = G;
     const int vx = g->v[k][0], vy = g->v[k][1], vz = g->v[k][2];
     Mac32 a, b, c;
@@ -232,7 +236,7 @@ static inline void rtps(int k, int sf, int lm, int depth_cue, uint32_t* flag) {
     }
 }
 
-static inline void rtps_slow(int k, int sf, int lm, int depth_cue, uint32_t* flag) {
+GTE_SLOW void rtps_slow(int k, int sf, int lm, int depth_cue, uint32_t* flag) {
     RtGte* g = G;
     const int vx = g->v[k][0], vy = g->v[k][1], vz = g->v[k][2];
     /* each product fits in 32 bits; the sums with TR << 12 need 44 */
@@ -301,31 +305,40 @@ static inline void rtps_slow(int k, int sf, int lm, int depth_cue, uint32_t* fla
 }
 
 /* ---- matrix * vector (MVMVA and the lighting commands) ---- */
-static void mat_vec(int sf, int lm, int mx, int vx, int cv, uint32_t* flag) {
+/* the operands of matrix * vector */
+GTE_FAST const int16_t (*mv_matrix(int mx, int16_t m[3][3]))[3] {
+    RtGte* g = G;
+    if (mx == 0) return g->rt;
+    if (mx == 1) return g->llm;
+    if (mx == 2) return g->lcm;
+    int16_t r = (int16_t)((g->rgbc & 0xFF) << 4);
+    m[0][0] = (int16_t)-r; m[0][1] = r; m[0][2] = g->ir[0];
+    m[1][0] = m[1][1] = m[1][2] = g->rt[0][2];
+    m[2][0] = m[2][1] = m[2][2] = g->rt[1][1];
+    return (const int16_t (*)[3])m;
+}
+GTE_FAST void mv_vector(int vx, int* x, int* y, int* z) {
+    RtGte* g = G;
+    if (vx < 3) { *x = g->v[vx][0]; *y = g->v[vx][1]; *z = g->v[vx][2]; }
+    else { *x = g->ir[1]; *y = g->ir[2]; *z = g->ir[3]; }
+}
+GTE_FAST void mv_trans(int cv, int32_t* t1, int32_t* t2, int32_t* t3) {
+    RtGte* g = G;
+    if (cv == 0) { *t1 = g->tr[0]; *t2 = g->tr[1]; *t3 = g->tr[2]; }
+    else if (cv == 1) { *t1 = g->bk[0]; *t2 = g->bk[1]; *t3 = g->bk[2]; }
+    else if (cv == 2) { *t1 = g->fc[0]; *t2 = g->fc[1]; *t3 = g->fc[2]; }
+    else { *t1 = *t2 = *t3 = 0; }
+}
+
+/* in 64 bits, and the FC bug */
+GTE_SLOW void mat_vec_slow(int sf, int lm, int mx, int vx, int cv, uint32_t* flag) {
     RtGte* g = G;
     int16_t m[3][3];
-    const int16_t (*mp)[3];
-    if (mx == 0) mp = g->rt;
-    else if (mx == 1) mp = g->llm;
-    else if (mx == 2) mp = g->lcm;
-    else {
-        int16_t r = (int16_t)((g->rgbc & 0xFF) << 4);
-        m[0][0] = (int16_t)-r; m[0][1] = r; m[0][2] = g->ir[0];
-        m[1][0] = m[1][1] = m[1][2] = g->rt[0][2];
-        m[2][0] = m[2][1] = m[2][2] = g->rt[1][1];
-        mp = (const int16_t (*)[3])m;
-    }
+    const int16_t (*mp)[3] = mv_matrix(mx, m);
     int x, y, z;
-    if (vx < 3) {
-        x = g->v[vx][0]; y = g->v[vx][1]; z = g->v[vx][2];
-    } else {
-        x = g->ir[1]; y = g->ir[2]; z = g->ir[3];
-    }
+    mv_vector(vx, &x, &y, &z);
     int32_t t1, t2, t3;
-    if (cv == 0) { t1 = g->tr[0]; t2 = g->tr[1]; t3 = g->tr[2]; }
-    else if (cv == 1) { t1 = g->bk[0]; t2 = g->bk[1]; t3 = g->bk[2]; }
-    else if (cv == 2) { t1 = g->fc[0]; t2 = g->fc[1]; t3 = g->fc[2]; }
-    else { t1 = t2 = t3 = 0; }
+    mv_trans(cv, &t1, &t2, &t3);
     s64 m1, m2, m3;
     if (cv == 2) {
         /* the FC bug: the first column's sum is checked, then dropped */
@@ -336,16 +349,6 @@ static void mat_vec(int sf, int lm, int mx, int vx, int cv, uint32_t* flag) {
         m2 = (s64)(mp[1][1] * y) + (s64)(mp[1][2] * z);
         m3 = (s64)(mp[2][1] * y) + (s64)(mp[2][2] * z);
     } else {
-        Mac32 a, b, c;
-        if (LIKELY(mac32(t1, mp[0][0] * x, mp[0][1] * y, mp[0][2] * z, &a) &&
-                   mac32(t2, mp[1][0] * x, mp[1][1] * y, mp[1][2] * z, &b) &&
-                   mac32(t3, mp[2][0] * x, mp[2][1] * y, mp[2][2] * z, &c))) {
-            g->mac[1] = mac32_reg(&a, sf);
-            g->mac[2] = mac32_reg(&b, sf);
-            g->mac[3] = mac32_reg(&c, sf);
-            set_ir123(lm, flag);
-            return;
-        }
         m1 = ((s64)t1 << 12) + (s64)(mp[0][0] * x) + (s64)(mp[0][1] * y) + (s64)(mp[0][2] * z);
         m2 = ((s64)t2 << 12) + (s64)(mp[1][0] * x) + (s64)(mp[1][1] * y) + (s64)(mp[1][2] * z);
         m3 = ((s64)t3 << 12) + (s64)(mp[2][0] * x) + (s64)(mp[2][1] * y) + (s64)(mp[2][2] * z);
@@ -360,7 +363,33 @@ static void mat_vec(int sf, int lm, int mx, int vx, int cv, uint32_t* flag) {
     set_ir123(lm, flag);
 }
 
-static void color_push(uint32_t* flag) {
+/* ---- matrix * vector (MVMVA and the lighting commands) ---- */
+GTE_FAST void mat_vec(int sf, int lm, int mx, int vx, int cv, uint32_t* flag) {
+    RtGte* g = G;
+    if (cv == 2) {
+        mat_vec_slow(sf, lm, mx, vx, cv, flag);
+        return;
+    }
+    int16_t m[3][3];
+    const int16_t (*mp)[3] = mv_matrix(mx, m);
+    int x, y, z;
+    mv_vector(vx, &x, &y, &z);
+    int32_t t1, t2, t3;
+    mv_trans(cv, &t1, &t2, &t3);
+    Mac32 a, b, c;
+    if (LIKELY(mac32(t1, mp[0][0] * x, mp[0][1] * y, mp[0][2] * z, &a) &&
+               mac32(t2, mp[1][0] * x, mp[1][1] * y, mp[1][2] * z, &b) &&
+               mac32(t3, mp[2][0] * x, mp[2][1] * y, mp[2][2] * z, &c))) {
+        g->mac[1] = mac32_reg(&a, sf);
+        g->mac[2] = mac32_reg(&b, sf);
+        g->mac[3] = mac32_reg(&c, sf);
+        set_ir123(lm, flag);
+        return;
+    }
+    mat_vec_slow(sf, lm, mx, vx, cv, flag);
+}
+
+GTE_FAST void color_push(uint32_t* flag) {
     RtGte* g = G;
     int r = g->mac[1] >> 4, gg = g->mac[2] >> 4, b = g->mac[3] >> 4;
     if (r < 0 || r > 0xFF) { *flag |= FLAG_COL_R_SAT; r = r < 0 ? 0 : 0xFF; }
@@ -371,7 +400,7 @@ static void color_push(uint32_t* flag) {
     g->rgb[2] = (uint32_t)r | ((uint32_t)gg << 8) | ((uint32_t)b << 16) | (g->rgbc & 0xFF000000u);
 }
 
-static void depth_cue(int sf, int lm, int32_t in_r, int32_t in_g, int32_t in_b, uint32_t* flag) {
+GTE_FAST void depth_cue(int sf, int lm, int32_t in_r, int32_t in_g, int32_t in_b, uint32_t* flag) {
     RtGte* g = G;
     const int shift = sf ? 12 : 0;
     const int16_t dr = sat_s16((int32_t)((((s64)g->fc[0] << 12) - in_r) >> shift));
@@ -383,7 +412,7 @@ static void depth_cue(int sf, int lm, int32_t in_r, int32_t in_g, int32_t in_b, 
     set_ir123(lm, flag);
 }
 
-static void color_apply(int sf, int lm, uint32_t* flag) {
+GTE_FAST void color_apply(int sf, int lm, uint32_t* flag) {
     RtGte* g = G;
     const int shift = sf ? 12 : 0;
     const int r = g->rgbc & 0xFF, gg = (g->rgbc >> 8) & 0xFF, b = (g->rgbc >> 16) & 0xFF;
@@ -393,13 +422,13 @@ static void color_apply(int sf, int lm, uint32_t* flag) {
     set_ir123(lm, flag);
 }
 
-static void depth_cue_color(int sf, int lm, uint32_t* flag) {
+GTE_FAST void depth_cue_color(int sf, int lm, uint32_t* flag) {
     RtGte* g = G;
     const int r = g->rgbc & 0xFF, gg = (g->rgbc >> 8) & 0xFF, b = (g->rgbc >> 16) & 0xFF;
     depth_cue(sf, lm, (r << 4) * g->ir[1], (gg << 4) * g->ir[2], (b << 4) * g->ir[3], flag);
 }
 
-static void nc_core(int kind, int sf, int lm, int v, uint32_t* flag) {
+GTE_FAST void nc_core(int kind, int sf, int lm, int v, uint32_t* flag) {
     mat_vec(sf, lm, 1, v, 3, flag);
     mat_vec(sf, lm, 2, 3, 1, flag);
     if (kind == 1) color_apply(sf, lm, flag);
@@ -559,7 +588,15 @@ static void gte_count(unsigned op) {
 #endif
 RT_GTE_OPS(RT_GTE_OP)
 
+#define RT_GTE_W(w) void rt_gte_w_##w(void) { gte_exec(0x##w, 0x##w & 0x3F); }
+RT_GTE_WORDS(RT_GTE_W)
+
 void rt_gte_command(uint32_t cmd) {
+    switch (cmd & 0x1FFFFFF) {
+#define RT_GTE_WCASE(w) case 0x##w: rt_gte_w_##w(); return;
+        RT_GTE_WORDS(RT_GTE_WCASE)
+    default: break;
+    }
     switch (cmd & 0x3F) {
 #define RT_GTE_CASE(o) case 0x##o: rt_gte_op_##o(cmd); break;
         RT_GTE_OPS(RT_GTE_CASE)

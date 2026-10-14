@@ -53,7 +53,23 @@ void rt_gte_reset(void);
     X(20) X(28) X(29) X(2A) X(2D) X(2E) X(30) X(3D) X(3E) X(3F)
 #define RT_GTE_DECL(o) void rt_gte_op_##o(uint32_t cmd);
 RT_GTE_OPS(RT_GTE_DECL)
+/* and each command word the game uses on its own, its options (sf, lm, the
+ * MVMVA operands) constants: TPM's, from the generated code */
+#define RT_GTE_WORDS(X)                                                        \
+    X(0180001) X(0280030) X(1400006) X(0486012) X(049E012) X(04C6012)          \
+    X(04AA012) X(041E012) X(04BE012) X(0496012) X(048E012) X(0480012)          \
+    X(043E012) X(0406012) X(04A6012) X(04DE012) X(04B6012) X(04AE012)          \
+    X(04A2012) X(198003D) X(190003D) X(0A00428) X(0A80428) X(1780010)          \
+    X(0780010) X(0980011) X(170000C) X(178000C) X(1A8003E) X(158002D)          \
+    X(168002E) X(0F8002A) X(0680029)
+#define RT_GTE_WDECL(w) void rt_gte_w_##w(void);
+RT_GTE_WORDS(RT_GTE_WDECL)
 static inline void rt_gte_cmd(uint32_t cmd) {
+    switch (cmd & 0x1FFFFFF) {
+#define RT_GTE_WCALL(w) case 0x##w: rt_gte_w_##w(); return;
+        RT_GTE_WORDS(RT_GTE_WCALL)
+    default: break;
+    }
     switch (cmd & 0x3F) {
 #define RT_GTE_CALL(o) case 0x##o: rt_gte_op_##o(cmd); break;
         RT_GTE_OPS(RT_GTE_CALL)
