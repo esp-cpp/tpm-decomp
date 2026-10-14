@@ -238,9 +238,29 @@ def addr(i):
         "%s - %du" % (R(i.rs), -off)
 
 
+# Memory access sites: the scratchpad-first accessors (LWs, ...) for the
+# sites in --scratch-sites, and with --sites every access reports its
+# address (SITE) so a desktop run can tell which sites those are.
+SCRATCH_SITES = set()
+SITE_PROFILE = False
+MEM_OPS = ("lb", "lh", "lw", "lbu", "lhu", "lwl", "lwr", "lwc2", "swc2") + \
+    tuple(STORES.values())
+
+
+def acc(i, name):
+    return name + "s" if i.pc in SCRATCH_SITES else name
+
+
 def op_c(i, dst=None):
     """C for a non-control instruction. dst overrides the destination
     register name (load delay slot handling)."""
+    c = op_c_(i, dst)
+    if SITE_PROFILE and c and i.op in MEM_OPS:
+        c = "SITE(0x%08Xu, %s); %s" % (i.pc, addr(i), c)
+    return c
+
+
+def op_c_(i, dst=None):
     o = i.op
     rd = dst or R(i.rd)
     rt = dst or R(i.rt)
@@ -249,7 +269,7 @@ def op_c(i, dst=None):
             return ""
         return "%s = %s << %d;" % (rd, R(i.rt), i.sa) if i.rd else ""
     if i.load and i.rt == 0 and o in ("lb", "lh", "lw", "lbu", "lhu"):
-        return "(void)%s(%s);" % (o.upper(), addr(i))  # I/O reads have effects
+        return "(void)%s(%s);" % (acc(i, o.upper()), addr(i))  # I/O reads have effects
     if not (i.writes - {HI, LO}) and o not in (
             "mult", "multu", "div", "divu", "mthi", "mtlo") \
             and o not in STORES.values() and o not in (
@@ -310,11 +330,11 @@ def op_c(i, dst=None):
     if o == "lui":
         return "%s = 0x%Xu;" % (rt, imm << 16)
     if o in ("lb", "lh", "lw", "lbu", "lhu"):
-        return "%s = %s(%s);" % (rt, o.upper(), addr(i))
+        return "%s = %s(%s);" % (rt, acc(i, o.upper()), addr(i))
     if o in ("lwl", "lwr"):
-        return "%s = %s(%s, %s);" % (rt, o.upper(), addr(i), R(i.rt))
+        return "%s = %s(%s, %s);" % (rt, acc(i, o.upper()), addr(i), R(i.rt))
     if o in STORES.values():
-        return "%s(%s, %s);" % (o.upper(), addr(i), R(i.rt))
+        return "%s(%s, %s);" % (acc(i, o.upper()), addr(i), R(i.rt))
     if o == "mfc0":
         return "%s = rt_mfc0(%d);" % (rt, i.rd)
     if o == "mtc0":
@@ -332,9 +352,9 @@ def op_c(i, dst=None):
     if o == "cop2":
         return "GTE_CMD(0x%07Xu);" % (i.w & 0x1FFFFFF)
     if o == "lwc2":
-        return "GTE_DW(%d, LW(%s));" % (i.rt, addr(i))
+        return "GTE_DW(%d, %s(%s));" % (i.rt, acc(i, "LW"), addr(i))
     if o == "swc2":
-        return "SW(%s, GTE_DR(%d));" % (addr(i), i.rt)
+        return "%s(%s, GTE_DR(%d));" % (acc(i, "SW"), addr(i), i.rt)
     raise ValueError("op_c: %s at %08X" % (o, i.pc))
 
 
@@ -1594,7 +1614,20 @@ def main():
     ap.add_argument("--poison", action="store_true",
                     help="check the analysis: registers a call does not pass "
                          "are overwritten in g_cpu before it")
+    ap.add_argument("--scratch-sites",
+                    help="file of access sites (hex addresses) that go to the "
+                         "scratchpad: they check it first (tools/sites.py)")
+    ap.add_argument("--sites", action="store_true",
+                    help="every access reports its site and address (RT_SITES "
+                         "builds), to measure --scratch-sites")
     args = ap.parse_args()
+    global SITE_PROFILE
+    SITE_PROFILE = args.sites
+    if args.scratch_sites:
+        for line in open(args.scratch_sites):
+            line = line.split("#")[0].strip()
+            if line:
+                SCRATCH_SITES.add(int(line, 16))
 
     exe = open(args.exe, "rb").read()
     prog = Program(exe)

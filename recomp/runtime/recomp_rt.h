@@ -22,11 +22,13 @@ typedef struct {
 } Cpu;
 extern Cpu g_cpu;
 
-/* Guest RAM: 2 MB, with the 1 KB scratchpad right after it. */
+/* Guest RAM: 2 MB. The 1 KB scratchpad is its own array at a fixed
+ * address (a constant base for the generated code, no pointer to reload). */
 #define RAM_SIZE 0x200000u
-#define SCRATCH_OFF RAM_SIZE
-#define RAM_ALLOC (RAM_SIZE + 0x400u)
+#define RAM_ALLOC RAM_SIZE
+#define SCRATCH_SIZE 0x400u
 extern uint8_t* g_ram;
+extern uint8_t g_scratch[SCRATCH_SIZE];
 
 uint32_t mem_read_slow(uint32_t a, int size);
 void mem_write_slow(uint32_t a, uint32_t v, int size);
@@ -50,33 +52,28 @@ void mem_write_slow(uint32_t a, uint32_t v, int size);
  * compiler cannot assume alignment and calls the library. */
 #define RAM32(o) (*(uint32_t*)(g_ram + (o)))
 #define RAM16(o) (*(uint16_t*)(g_ram + (o)))
+#define SCR32(o) (*(uint32_t*)(g_scratch + (o)))
+#define SCR16(o) (*(uint16_t*)(g_scratch + (o)))
+#define RAM8(o) (g_ram[o])
+#define SCR8(o) (g_scratch[o])
 
-/* Where a guest address lands in g_ram, or -1 for I/O / unmapped. KUSEG,
- * KSEG0 and KSEG1 all see the same 2 MB (mirrored over 8 MB). */
+/* Where a guest address lands in g_ram, or -1 for the rest. KUSEG, KSEG0
+ * and KSEG1 all see the same 2 MB (mirrored over 8 MB). */
 RT_ACCESS int32_t ram_off(uint32_t a) {
     uint32_t p = a & 0x1FFFFFFFu;
     if (RT_LIKELY(p < 0x00800000u)) return (int32_t)(p & (RAM_SIZE - 1));
-    if ((p & 0xFFFFFC00u) == 0x1F800000u) return (int32_t)(SCRATCH_OFF + (p & 0x3FFu));
     return -1;
 }
-
-RT_ACCESS uint32_t LW(uint32_t a) {
-    int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) return RAM32(o);
-    return mem_read_slow(a, 4);
+/* The scratchpad offset of a guest address, or >= SCRATCH_SIZE. The
+ * generated code addresses it as 0x1F800000 (a site that uses a mirror
+ * takes the slow path's own check). */
+RT_ACCESS uint32_t scr_off(uint32_t a) { return a - 0x1F800000u; }
+/* the rest: the scratchpad's mirrors and I/O */
+RT_ACCESS int32_t scr_off_any(uint32_t a) {
+    uint32_t p = a & 0x1FFFFFFFu;
+    if ((p & 0xFFFFFC00u) == 0x1F800000u) return (int32_t)(p & 0x3FFu);
+    return -1;
 }
-RT_ACCESS uint32_t LHU(uint32_t a) {
-    int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) return RAM16(o);
-    return mem_read_slow(a, 2) & 0xFFFFu;
-}
-RT_ACCESS uint32_t LH(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LHU(a); }
-RT_ACCESS uint32_t LBU(uint32_t a) {
-    int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) return g_ram[o];
-    return mem_read_slow(a, 1) & 0xFFu;
-}
-RT_ACCESS uint32_t LB(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBU(a); }
 
 #ifdef RT_DEBUG
 extern uint32_t g_watch; /* RT_WATCH=addr: log stores to that word */
@@ -86,64 +83,99 @@ void rt_watch_hit(uint32_t a, uint32_t v, int size);
 #define WATCH(a, v, n) do { } while (0)
 #endif
 
-RT_ACCESS void SW(uint32_t a, uint32_t v) {
-    WATCH(a, v, 4);
-    int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) { RAM32(o) = v; return; }
-    mem_write_slow(a, v, 4);
-}
-RT_ACCESS void SH(uint32_t a, uint32_t v) {
-    WATCH(a, v, 2);
-    int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) { RAM16(o) = (uint16_t)v; return; }
-    mem_write_slow(a, v & 0xFFFFu, 2);
-}
-RT_ACCESS void SB(uint32_t a, uint32_t v) {
-    WATCH(a, v, 1);
-    int32_t o = ram_off(a);
-    if (RT_LIKELY(o >= 0)) { g_ram[o] = (uint8_t)v; return; }
-    mem_write_slow(a, v & 0xFFu, 1);
-}
+/* Each access comes in two orders: RAM first (LW, ...), and scratchpad
+ * first (LWs, ...) for the sites the recompiler was told go there
+ * (--scratch-sites: measured on the desktop, see tools/sites.py). Both
+ * are correct for any address; the order only decides which is cheap.
+ * RT_SITES builds record what each site touched instead. */
+#ifdef RT_SITES
+void rt_site(uint32_t pc, uint32_t a);
+#define SITE(pc, a) rt_site(pc, a)
+#else
+#define SITE(pc, a) ((void)0)
+#endif
+
+#define RT_LOADS(X) X(W, 4, uint32_t, RAM32, SCR32, ) X(HU, 2, uint32_t, RAM16, SCR16, ) \
+    X(BU, 1, uint32_t, RAM8, SCR8, )
+#define RT_LOAD_FNS(S, N, T, RAMACC, SCRACC, _)                                   \
+    RT_ACCESS uint32_t L##S(uint32_t a) {                                         \
+        int32_t o = ram_off(a);                                                   \
+        if (RT_LIKELY(o >= 0)) return RAMACC(o);                                  \
+        o = scr_off_any(a);                                                       \
+        if (o >= 0) return SCRACC(o);                                             \
+        return mem_read_slow(a, N) & (N == 4 ? 0xFFFFFFFFu : (1u << (N * 8)) - 1); \
+    }                                                                             \
+    RT_ACCESS uint32_t L##S##s(uint32_t a) {                                      \
+        uint32_t s = scr_off(a);                                                  \
+        if (RT_LIKELY(s < SCRATCH_SIZE)) return SCRACC(s);                        \
+        return L##S(a);                                                           \
+    }
+RT_LOADS(RT_LOAD_FNS)
+RT_ACCESS uint32_t LH(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LHU(a); }
+RT_ACCESS uint32_t LB(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBU(a); }
+RT_ACCESS uint32_t LHs(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LHUs(a); }
+RT_ACCESS uint32_t LBs(uint32_t a) { return (uint32_t)(int32_t)(int8_t)LBUs(a); }
+
+#define RT_STORES(X) X(W, 4, uint32_t, RAM32, SCR32) X(H, 2, uint16_t, RAM16, SCR16) \
+    X(B, 1, uint8_t, RAM8, SCR8)
+#define RT_STORE_FNS(SZ, N, T, RAMACC, SCRACC)                                     \
+    RT_ACCESS void S##SZ(uint32_t a, uint32_t v) {                                 \
+        WATCH(a, v, N);                                                           \
+        int32_t o = ram_off(a);                                                   \
+        if (RT_LIKELY(o >= 0)) { RAMACC(o) = (T)v; return; }                      \
+        o = scr_off_any(a);                                                       \
+        if (o >= 0) { SCRACC(o) = (T)v; return; }                                 \
+        mem_write_slow(a, N == 4 ? v : v & ((1u << (N * 8)) - 1), N);             \
+    }                                                                             \
+    RT_ACCESS void S##SZ##s(uint32_t a, uint32_t v) {                              \
+        uint32_t s = scr_off(a);                                                  \
+        if (RT_LIKELY(s < SCRATCH_SIZE)) { SCRACC(s) = (T)v; return; }            \
+        S##SZ(a, v);                                                               \
+    }
+RT_STORES(RT_STORE_FNS)
 
 /* unaligned word access, little-endian R3000 semantics */
-RT_INLINE uint32_t LWL(uint32_t a, uint32_t rt) {
-    uint32_t w = LW(a & ~3u);
-    switch (a & 3) {
-    case 0: return (rt & 0x00FFFFFFu) | (w << 24);
-    case 1: return (rt & 0x0000FFFFu) | (w << 16);
-    case 2: return (rt & 0x000000FFu) | (w << 8);
-    default: return w;
+#define RT_UNALIGNED(SFX)                                                         \
+    RT_INLINE uint32_t LWL##SFX(uint32_t a, uint32_t rt) {                        \
+        uint32_t w = LW##SFX(a & ~3u);                                            \
+        switch (a & 3) {                                                          \
+        case 0: return (rt & 0x00FFFFFFu) | (w << 24);                            \
+        case 1: return (rt & 0x0000FFFFu) | (w << 16);                            \
+        case 2: return (rt & 0x000000FFu) | (w << 8);                             \
+        default: return w;                                                        \
+        }                                                                         \
+    }                                                                             \
+    RT_INLINE uint32_t LWR##SFX(uint32_t a, uint32_t rt) {                        \
+        uint32_t w = LW##SFX(a & ~3u);                                            \
+        switch (a & 3) {                                                          \
+        case 0: return w;                                                         \
+        case 1: return (rt & 0xFF000000u) | (w >> 8);                             \
+        case 2: return (rt & 0xFFFF0000u) | (w >> 16);                            \
+        default: return (rt & 0xFFFFFF00u) | (w >> 24);                           \
+        }                                                                         \
+    }                                                                             \
+    RT_INLINE void SWL##SFX(uint32_t a, uint32_t rt) {                            \
+        uint32_t al = a & ~3u, w = LW##SFX(al);                                   \
+        switch (a & 3) {                                                          \
+        case 0: w = (w & 0xFFFFFF00u) | (rt >> 24); break;                        \
+        case 1: w = (w & 0xFFFF0000u) | (rt >> 16); break;                        \
+        case 2: w = (w & 0xFF000000u) | (rt >> 8); break;                         \
+        default: w = rt; break;                                                   \
+        }                                                                         \
+        SW##SFX(al, w);                                                           \
+    }                                                                             \
+    RT_INLINE void SWR##SFX(uint32_t a, uint32_t rt) {                            \
+        uint32_t al = a & ~3u, w = LW##SFX(al);                                   \
+        switch (a & 3) {                                                          \
+        case 0: w = rt; break;                                                    \
+        case 1: w = (w & 0x000000FFu) | (rt << 8); break;                         \
+        case 2: w = (w & 0x0000FFFFu) | (rt << 16); break;                        \
+        default: w = (w & 0x00FFFFFFu) | (rt << 24); break;                       \
+        }                                                                         \
+        SW##SFX(al, w);                                                           \
     }
-}
-RT_INLINE uint32_t LWR(uint32_t a, uint32_t rt) {
-    uint32_t w = LW(a & ~3u);
-    switch (a & 3) {
-    case 0: return w;
-    case 1: return (rt & 0xFF000000u) | (w >> 8);
-    case 2: return (rt & 0xFFFF0000u) | (w >> 16);
-    default: return (rt & 0xFFFFFF00u) | (w >> 24);
-    }
-}
-RT_INLINE void SWL(uint32_t a, uint32_t rt) {
-    uint32_t al = a & ~3u, w = LW(al);
-    switch (a & 3) {
-    case 0: w = (w & 0xFFFFFF00u) | (rt >> 24); break;
-    case 1: w = (w & 0xFFFF0000u) | (rt >> 16); break;
-    case 2: w = (w & 0xFF000000u) | (rt >> 8); break;
-    default: w = rt; break;
-    }
-    SW(al, w);
-}
-RT_INLINE void SWR(uint32_t a, uint32_t rt) {
-    uint32_t al = a & ~3u, w = LW(al);
-    switch (a & 3) {
-    case 0: w = rt; break;
-    case 1: w = (w & 0x000000FFu) | (rt << 8); break;
-    case 2: w = (w & 0x0000FFFFu) | (rt << 16); break;
-    default: w = (w & 0x00FFFFFFu) | (rt << 24); break;
-    }
-    SW(al, w);
-}
+RT_UNALIGNED()
+RT_UNALIGNED(s)
 
 /* R3000 division, including its answers for x/0 and INT_MIN/-1 */
 RT_INLINE void DIV(uint32_t rs, uint32_t rt, uint32_t* hi, uint32_t* lo) {

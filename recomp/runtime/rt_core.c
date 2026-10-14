@@ -41,6 +41,31 @@ const char* rt_where(void) {
 #endif
 }
 RT_HOT uint8_t* g_ram;
+uint8_t g_scratch[SCRATCH_SIZE] __attribute__((aligned(64)));
+
+#ifdef RT_SITES
+/* what each access site touched (recomp.py --sites): written at exit to
+ * $RT_SITES_OUT as "pc mask" lines (1 RAM, 2 scratchpad, 4 the rest) */
+#define SITE_BITS 18
+static struct { uint32_t pc, mask; } sites[1u << SITE_BITS];
+static void sites_dump(void) {
+    const char* path = getenv("RT_SITES_OUT");
+    FILE* f = path ? fopen(path, "w") : NULL;
+    if (!f) return;
+    for (uint32_t k = 0; k < (1u << SITE_BITS); k++)
+        if (sites[k].pc) fprintf(f, "%08X %u\n", (unsigned)sites[k].pc, (unsigned)sites[k].mask);
+    fclose(f);
+}
+void rt_site(uint32_t pc, uint32_t a) {
+    static int once;
+    if (!once) { once = 1; atexit(sites_dump); }
+    const uint32_t m = ram_off(a) >= 0 ? 1u : scr_off(a) < SCRATCH_SIZE ? 2u : 4u;
+    uint32_t k = (pc >> 2) & ((1u << SITE_BITS) - 1);
+    while (sites[k].pc && sites[k].pc != pc) k = (k + 1) & ((1u << SITE_BITS) - 1);
+    sites[k].pc = pc;
+    sites[k].mask |= m;
+}
+#endif
 
 /* ---- names, for logs ---- */
 const char* rt_name(uint32_t a) {
@@ -369,6 +394,7 @@ void rt_boot(const uint8_t* exe, uint32_t size) {
     if (!g_ram) g_ram = (uint8_t*)plat_alloc(RAM_ALLOC);
     if (!g_ram || !gpu_alloc()) rt_fatal("no memory for guest RAM / VRAM");
     memset(g_ram, 0, RAM_ALLOC);
+    memset(g_scratch, 0, sizeof g_scratch);
     exit_requested = pause_requested = 0;
     hook_buf = 0;
     in_irq = 0;

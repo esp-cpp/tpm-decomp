@@ -1,5 +1,7 @@
 /* The GTE's commands on rt_gte.h's register file. The arithmetic is psyz's
  * (libgte.c), result for result: RT_GTE_CHECK builds compare the two. */
+#include <string.h>
+
 #include "rt_gte.h"
 
 /* (internal RAM measured slower than cached PSRAM for the P4's cores: these
@@ -64,12 +66,26 @@ static const uint8_t unr_table[257] = {
     0x01, 0x01, 0x00, 0x00, 0x00};
 
 
+/* the leading zeros of a 16-bit value (1..0xFFFF) as a 16-bit number. An
+ * RV32 core without Zbb (the P4) calls the library for __builtin_clz; the
+ * exponent of the value as a float is the same answer in three instructions */
+static inline uint32_t clz16(uint32_t v) {
+#if defined(__riscv) && !defined(__riscv_zbb) && defined(__riscv_flen)
+    const float f = (float)v;
+    uint32_t b;
+    memcpy(&b, &f, 4);
+    return 142u - (b >> 23);
+#else
+    return (uint32_t)__builtin_clz(v) - 16u;
+#endif
+}
+
 static inline uint32_t gte_divide(uint32_t h, uint32_t sz3, uint32_t* flag) {
     if (h >= sz3 * 2) {
         *flag |= FLAG_DIV_OVF;
         return 0x1FFFF;
     }
-    uint32_t z = (uint32_t)__builtin_clz(sz3) - 16u;
+    uint32_t z = clz16(sz3);
     uint32_t n = h << z;
     uint32_t d = sz3 << z;
     uint32_t u = unr_table[(d - 0x7FC0) >> 7] + 0x101;
@@ -525,7 +541,22 @@ static inline __attribute__((always_inline)) void gte_exec(uint32_t cmd, unsigne
     g->flag = flag;
 }
 
+#ifdef RT_GTE_COUNT /* how many of each command: at exit, on stderr */
+#include <stdio.h>
+#include <stdlib.h>
+static unsigned long gte_cnt[64];
+static void gte_cnt_dump(void) {
+    for (int i = 0; i < 64; i++) if (gte_cnt[i]) fprintf(stderr, "gtecount %02X %lu\n", i, gte_cnt[i]);
+}
+static void gte_count(unsigned op) {
+    static int once;
+    if (!once) { once = 1; atexit(gte_cnt_dump); }
+    gte_cnt[op]++;
+}
+#define RT_GTE_OP(o) void rt_gte_op_##o(uint32_t cmd) { gte_count(0x##o); gte_exec(cmd, 0x##o); }
+#else
 #define RT_GTE_OP(o) void rt_gte_op_##o(uint32_t cmd) { gte_exec(cmd, 0x##o); }
+#endif
 RT_GTE_OPS(RT_GTE_OP)
 
 void rt_gte_command(uint32_t cmd) {

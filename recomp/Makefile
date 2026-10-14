@@ -21,8 +21,10 @@ OBJ := $(patsubst %.c,$(BUILD)/obj/%.o,$(notdir $(GEN) $(RT)))
 
 all: $(BUILD)/tpm-host
 
-$(BUILD)/gen/.stamp: $(EXE) ../tools/recomp.py ../config/recomp_entries.us.txt hle.us.txt
-	python3 ../tools/recomp.py $(EXE) $(BUILD)/gen --files $(NGEN) $(if $(DISC),--disc "$(DISC)") $(RECOMP_FLAGS)
+SITES ?= ../config/scratch_sites.us.txt
+$(BUILD)/gen/.stamp: $(EXE) ../tools/recomp.py ../config/recomp_entries.us.txt hle.us.txt $(SITES)
+	python3 ../tools/recomp.py $(EXE) $(BUILD)/gen --files $(NGEN) $(if $(DISC),--disc "$(DISC)") \
+	    $(if $(SITES),--scratch-sites $(SITES)) $(RECOMP_FLAGS)
 	touch $@
 $(GEN): $(BUILD)/gen/.stamp
 	@true
