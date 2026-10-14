@@ -27,7 +27,13 @@ extern Cpu g_cpu;
 #define RAM_SIZE 0x200000u
 #define RAM_ALLOC RAM_SIZE
 #define SCRATCH_SIZE 0x400u
+/* the generated code sees the pointer as const (it is set before any of
+ * that runs): GCC need not reload it after every store */
+#ifdef RT_RAM_OWNER
 extern uint8_t* g_ram;
+#else
+extern uint8_t* const g_ram;
+#endif
 extern uint8_t g_scratch[SCRATCH_SIZE];
 
 uint32_t mem_read_slow(uint32_t a, int size);

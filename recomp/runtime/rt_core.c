@@ -1,5 +1,6 @@
 /* Core of the recompiled-code runtime: register file, memory, dispatch,
  * traps, COP0, and interrupt delivery. */
+#define RT_RAM_OWNER /* g_ram changes here; recomp_rt.h */
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
