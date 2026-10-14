@@ -194,15 +194,20 @@ void plat_vblank(void) {}
 /* frames are counted (and dumped) here: with --async-gpu this runs on the GPU
  * thread, after the drawing of the frame */
 void plat_display_ready(const RtDisplay* d) {
-    static uint32_t f;
+    static uint32_t f, stale;
+    static int slow_us = -1; /* testing frameskip: a slower GPU worker */
+    if (slow_us < 0) slow_us = getenv("RT_GPU_SLOW_US") ? atoi(getenv("RT_GPU_SLOW_US")) : 0;
+    if (slow_us) usleep((useconds_t)slow_us);
     f++;
-    if (dump_dir && (f % (uint32_t)every == 0 || (int)f >= max_frames)) dump(f, *d);
+    stale += d->stale != 0;
+    if (dump_dir && !d->stale && (f % (uint32_t)every == 0 || (int)f >= max_frames)) dump(f, *d);
     if ((int)f >= max_frames) {
         if (wav) wav_header();
 #ifdef RT_DEBUG
         extern int g_shadow_max;
         printf("[host] deepest guest call chain: %d\n", g_shadow_max);
 #endif
+        if (stale) printf("[host] frameskip: %u frames skipped, %u vblanks held\n", g_rt_gpu_skipped, stale);
         printf("[host] %d frames: done\n", max_frames);
         fflush(stdout);
         exit(0);
@@ -223,7 +228,7 @@ static uint16_t parse_buttons(const char* s) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--realtime] [--async-gpu] [--gpu-workers 2]\n", argv[0]);
+        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--realtime] [--async-gpu] [--gpu-workers 2] [--frameskip N]\n", argv[0]);
         return 2;
     }
     for (int i = 3; i < argc; i++) {
@@ -233,6 +238,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--vram")) dump_vram = 1;
         else if (!strcmp(argv[i], "--realtime")) rt_set_realtime(1);
         else if (!strcmp(argv[i], "--async-gpu")) async_gpu = 1;
+        else if (!strcmp(argv[i], "--frameskip") && i + 1 < argc) rt_gpu_set_frameskip(atoi(argv[++i]));
         else if (!strcmp(argv[i], "--gpu-workers") && i + 1 < argc) async_gpu = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--gpu-record") && i + 3 < argc) {
             /* --gpu-record FILE FROM FRAMES */

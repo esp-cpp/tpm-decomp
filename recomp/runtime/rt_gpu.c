@@ -121,6 +121,18 @@ static uint16_t* xfer_buf;
 static uint32_t dma_dir;
 static int disp_off = 1, disp_x, disp_y, disp_mode, field;
 static int disp_y1 = 16, disp_y2 = 256; /* GP1 07, scanlines (NTSC: 16..256) */
+/* frameskip (below) */
+static int fs_max, fs_skipping, fs_run, fs_dropped, fs_drew;
+static uint32_t vbl_queued, vbl_done;
+typedef struct {
+    int x0, y0, x1, y1; /* a draw area the game used (E3 / E4) */
+    int shown;          /* the display has started inside it */
+    int stale;          /* primitives into it were dropped since its E3 */
+} FsBuf;
+#define FS_BUFS 4
+static FsBuf fs_buf[FS_BUFS];
+static int fs_cur = -1, fs_next;
+static void fs_reset(void);
 
 /* the worker that does what only one may (VRAM moves and transfers, the
  * display), and whose parser the CPU's thread reads back */
@@ -193,6 +205,7 @@ void rt_gpu_display(RtDisplay* d) {
     if (top + lines > d->h) lines = d->h - top;
     d->top = top;
     d->lines = lines;
+    d->stale = 0;
 }
 
 void gpu_reset(void) {
@@ -212,6 +225,9 @@ int gpu_alloc(void) {
     if (!g_rt_vram) g_rt_vram = (u16*)plat_alloc(VRAM_W * VRAM_H * 2);
     if (async_on && !ring) ring = (uint32_t*)plat_alloc(RING_ENTRIES * 2 * sizeof(uint32_t));
     ring_w = ring_r[0] = ring_r[1] = 0;
+    vbl_queued = vbl_done = 0;
+    fs_skipping = fs_run = fs_dropped = fs_drew = 0;
+    fs_reset();
     return g_rt_vram != NULL;
 }
 
@@ -307,11 +323,54 @@ static void exec_packet(Parser* p) {
     exec_packet_(p);
     g_rt_prof.gpu += plat_time_us() - t0;
 }
+/* ---- frameskip (rt_gpu_set_frameskip) ----
+ * Decided by the worker at each vblank marker for the drawing up to the next
+ * one (the game queues a frame's whole list between two vblanks). Only
+ * primitives into a display buffer are dropped: the draw areas the game set
+ * are remembered, and one is a display buffer once a vblank's display
+ * address fell inside it (not at its corner: letterboxed cutscenes start the
+ * display lower down). A buffer is `stale` from a dropped primitive until the
+ * game starts drawing it again (E3) in a drawn frame. */
+uint32_t g_rt_gpu_skipped;
+void rt_gpu_set_frameskip(int max) { fs_max = max < 0 ? 0 : max; }
+
+static void fs_area_start(int x, int y) {
+    int b = -1;
+    for (int i = 0; i < FS_BUFS; i++)
+        if (fs_buf[i].x0 == x && fs_buf[i].y0 == y) b = i;
+    if (b < 0) {
+        b = fs_next;
+        fs_next = (fs_next + 1) % FS_BUFS;
+        fs_buf[b].x0 = x;
+        fs_buf[b].y0 = y;
+        fs_buf[b].x1 = VRAM_W - 1;
+        fs_buf[b].y1 = VRAM_H - 1;
+        fs_buf[b].shown = fs_buf[b].stale = 0;
+    }
+    fs_cur = b;
+    if (!fs_skipping) fs_buf[b].stale = 0; /* drawn afresh from here */
+}
+static void fs_reset(void) {
+    for (int i = 0; i < FS_BUFS; i++) {
+        fs_buf[i].x0 = fs_buf[i].y0 = -1;
+        fs_buf[i].shown = fs_buf[i].stale = 0;
+    }
+    fs_cur = -1;
+    fs_next = 0;
+}
+
 static void exec_packet_(Parser* p) {
     uint32_t* cmd = p->cmd;
     uint32_t c = cmd[0] >> 24;
     trace_packet(p, c);
     if (c >= 0x20 && c < 0x80) {
+        if (fs_max && fs_cur >= 0 && fs_buf[fs_cur].shown) {
+            if (fs_skipping) {
+                fs_buf[fs_cur].stale = fs_dropped = 1;
+                return;
+            }
+            fs_drew = 1;
+        }
         if (nworkers == 2 && (c & 4)) {
             /* polygons carry their texpage in the second texcoord word */
             uint32_t tp = c < 0x40 ? cmd[(c & 0x10) ? 5 : 4] >> 16 : p->tpage;
@@ -381,6 +440,7 @@ static void exec_packet_(Parser* p) {
         p->e3 = cmd[0] & 0xFFFFF;
         p->ax0 = p->e3 & 0x3FF;
         p->ay0 = (p->e3 >> 10) & 0x1FF;
+        if (fs_max) fs_area_start(p->ax0, p->ay0);
         Draw_SetAreaStart(p->ax0, p->ay0);
         apply_band(p);
         break;
@@ -389,6 +449,10 @@ static void exec_packet_(Parser* p) {
         p->ax1 = p->e4 & 0x3FF;
         p->ay1 = (p->e4 >> 10) & 0x1FF;
         Draw_SetAreaEnd(p->ax1, p->ay1);
+        if (fs_max && fs_cur >= 0) {
+            fs_buf[fs_cur].x1 = p->ax1;
+            fs_buf[fs_cur].y1 = p->ay1;
+        }
         break;
     case 0xE5:
         p->e5 = cmd[0] & 0x3FFFFF;
@@ -595,6 +659,28 @@ static void vblank_marker(uint32_t kind, uint32_t v) {
         d.enabled = (int)((v >> 31) & 1);
         d.top = (int)((kind >> 8) & 0x3FF);
         d.lines = (int)((kind >> 20) & 0x3FF);
+        d.stale = 0;
+        if (fs_max && nworkers == 1) {
+            /* the draw areas the display starts in */
+            for (int i = 0; i < FS_BUFS; i++) {
+                FsBuf* f = &fs_buf[i];
+                if (d.x >= f->x0 && d.x <= f->x1 && d.y >= f->y0 && d.y <= f->y1) {
+                    f->shown = 1;
+                    d.stale |= f->stale;
+                }
+            }
+            /* the interval that ended: a frame dropped or drawn */
+            if (fs_dropped) {
+                fs_run++;
+                g_rt_gpu_skipped++;
+            } else if (fs_drew) {
+                fs_run = 0;
+            }
+            fs_dropped = fs_drew = 0;
+            /* the next: dropped if the game is two vblanks further on */
+            const uint32_t behind = __atomic_load_n(&vbl_queued, __ATOMIC_ACQUIRE) - ++vbl_done;
+            fs_skipping = behind >= 2 && fs_run < fs_max;
+        }
         plat_display_ready(&d);
     }
     barrier_(0);
@@ -795,8 +881,10 @@ void gpu_present(void) {
                      ((uint32_t)(d.w & 0x3FF) << 19) | ((uint32_t)(d.h == 480) << 29) |
                      ((uint32_t)(d.rgb24 & 1) << 30) | ((uint32_t)(d.enabled & 1) << 31);
         ring_push(Q_VBLANK | ((uint32_t)d.top << 8) | ((uint32_t)d.lines << 20), v);
+        __atomic_store_n(&vbl_queued, vbl_queued + 1, __ATOMIC_RELEASE);
         plat_gpu_kick();
     } else {
+        d.stale = 0;
         plat_display_ready(&d);
     }
 }

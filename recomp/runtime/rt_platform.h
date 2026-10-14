@@ -17,6 +17,9 @@ typedef struct {
      * y + lines - 1) starts `top` lines down the h-line screen, the rest of
      * the screen is black (letterboxed cutscenes shrink it) */
     int top, lines;
+    /* frameskip (rt_gpu_set_frameskip): the buffer shown was not drawn for
+     * the game's latest frame in it; keep showing the previous picture */
+    int stale;
 } RtDisplay;
 
 /* One raw 2352-byte sector of the disc (LBA 0 = 00:02:00). Returns 0 on
@@ -89,6 +92,13 @@ void rt_gpu_set_async(int n);
 void rt_gpu_worker_n(volatile int* stop, int idx);
 void rt_gpu_worker(volatile int* stop);
 extern uint32_t g_rt_gpu_split, g_rt_gpu_barriers; /* two workers: telemetry */
+/* Frameskip, one worker only: when the game has queued two more vblanks
+ * behind the frame the worker is about to draw, that frame's primitives into
+ * the display buffers are dropped (VRAM transfers, fills, state and drawing
+ * elsewhere in VRAM still run) and its buffer is presented as `stale`. At
+ * most `max` frames in a row; 0 = off. g_rt_gpu_skipped counts them. */
+void rt_gpu_set_frameskip(int max);
+extern uint32_t g_rt_gpu_skipped;
 extern uint64_t g_rt_gpu_wait_us[2];
 
 void rt_gpu_display(RtDisplay* d);
