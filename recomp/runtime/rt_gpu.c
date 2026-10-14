@@ -99,9 +99,9 @@ void Draw_Reset(void) {
  * only its band of rows; everything below that is per worker lives in a
  * Parser, indexed like the rasterizer's own per-core state (soft_core()). */
 static void gpu_drain(void);
-#define RING_ENTRIES (1u << 16)
-static uint32_t* ring;             /* the async queue: [kind, value] pairs */
-static uint32_t ring_w, ring_r[2]; /* entries; producer / each worker (published) */
+#define RING_WORDS (1u << 17)
+static uint32_t* ring;             /* the async queue: entries of words (below) */
+static uint32_t ring_w, ring_r[2]; /* words; producer / each worker (published) */
 static uint32_t ring_r_local[2];   /* each worker's own position */
 static int async_on;               /* 0: drawing on the CPU's thread; 1, 2 workers */
 static volatile int prod_wait;     /* the CPU's thread waits for ring space */
@@ -239,7 +239,7 @@ int gpu_alloc(void) {
         if (!*ts) return 0;
     }
 #endif
-    if (async_on && !ring) ring = (uint32_t*)plat_alloc(RING_ENTRIES * 2 * sizeof(uint32_t));
+    if (async_on && !ring) ring = (uint32_t*)plat_alloc(RING_WORDS * sizeof(uint32_t));
     ring_w = ring_r[0] = ring_r[1] = 0;
     vbl_queued = vbl_done = 0;
     fs_skipping = fs_run = fs_dropped = fs_drew = 0;
@@ -251,7 +251,7 @@ int gpu_alloc(void) {
 uint32_t gpu_mem_bytes(int* count) {
     uint32_t n = VRAM_W * VRAM_H * 2;              /* VRAM */
     n += VRAM_W * VRAM_H * 2 + 4;                  /* transfers */
-    n += RING_ENTRIES * 2 * sizeof(uint32_t);      /* the async queue (if any) */
+    n += RING_WORDS * sizeof(uint32_t);            /* the async queue (if any) */
     *count += 3;
 #ifdef SOFT_TILED_TEX
     n += VRAM_W * VRAM_H * 2;                      /* the tiled texture shadow */
@@ -644,15 +644,19 @@ static void gp1_display(uint32_t w) {
  * and one or two workers execute them on the other cores. A vblank marker
  * in the ring presents the display after exactly the drawing queued before
  * it. Reads of GPU state that depend on the drawing (GPUREAD, VRAM -> CPU)
- * wait for the ring to drain. */
-enum { Q_GP0, Q_GP1, Q_VBLANK };
+ * wait for the ring to drain.
+ * An entry is a kind word (the low byte; the rest is the kind's) and a
+ * value, or for Q_GP0N, n GP0 words straight after it (kind | n << 8): a
+ * DMA packet goes in as one copy. */
+enum { Q_GP0, Q_GP1, Q_VBLANK, Q_GP0N };
+#define RING_MASK (RING_WORDS - 1)
 
 void rt_gpu_set_async(int n) {
     async_on = n > 0;
     nworkers = n;
 }
 
-#define KICK_BATCH 256u
+#define KICK_BATCH 256u /* words */
 static inline uint32_t ring_load(uint32_t* p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
 static inline uint32_t ring_tail(void) {
     uint32_t a = ring_load(&ring_r[1]);
@@ -663,27 +667,36 @@ static inline uint32_t ring_tail(void) {
     return a;
 }
 
-static void ring_push(uint32_t kind, uint32_t v) {
-    uint32_t w = ring_w;
-    if (w - ring_tail() >= RING_ENTRIES) { /* full: wait for the workers */
+/* room for n more words, waiting for the workers if the ring is full */
+static inline void ring_room(uint32_t w, uint32_t n) {
+    if (w + n - ring_tail() > RING_WORDS) {
         plat_gpu_kick();
         prod_wait = 1;
         const uint64_t t0 = plat_time_us();
-        while (w - ring_tail() >= RING_ENTRIES) plat_gpu_idle();
+        while (w + n - ring_tail() > RING_WORDS) plat_gpu_idle();
         g_rt_gpu_prod_wait_us += plat_time_us() - t0;
         prod_wait = 0;
     }
-    uint32_t i = (w & (RING_ENTRIES - 1)) * 2;
-    ring[i] = kind;
-    ring[i + 1] = v;
-    __atomic_store_n(&ring_w, w + 1, __ATOMIC_RELEASE);
-    /* a worker that ran dry is woken once a batch has built up (or at the
-     * vblank, a drain, a full queue; it also looks again every tick): a
-     * wake per word cost the board a context switch per word, and the
-     * second worker preempts the game on its core */
-    if (w + 1 - ring_load(&ring_r[1]) == KICK_BATCH ||
-        (nworkers == 2 && w + 1 - ring_load(&ring_r[0]) == KICK_BATCH))
+}
+/* publish the words up to w + n; a worker that ran dry is woken once a
+ * batch has built up (or at the vblank, a drain, a full queue; it also
+ * looks again every tick): a wake per word cost the board a context switch
+ * per word, and the second worker preempts the game on its core */
+static inline void ring_publish(uint32_t w, uint32_t n) {
+    __atomic_store_n(&ring_w, w + n, __ATOMIC_RELEASE);
+    const uint32_t r1 = ring_load(&ring_r[1]);
+    if ((w - r1 < KICK_BATCH && w + n - r1 >= KICK_BATCH) ||
+        (nworkers == 2 && w - ring_load(&ring_r[0]) < KICK_BATCH &&
+         w + n - ring_load(&ring_r[0]) >= KICK_BATCH))
         plat_gpu_kick();
+}
+
+static void ring_push(uint32_t kind, uint32_t v) {
+    const uint32_t w = ring_w;
+    ring_room(w, 2);
+    ring[w & RING_MASK] = kind;
+    ring[(w + 1) & RING_MASK] = v;
+    ring_publish(w, 2);
 }
 
 static void gpu_drain(void) {
@@ -784,27 +797,37 @@ void rt_gpu_worker_n(volatile int* stop, int idx) {
          * fence on this core); the read position is published every 32
          * entries and at the end (a release store is a fence too) */
         const uint32_t end = ring_load(&ring_w);
+        uint32_t since = 0, pubs = 0;
         while (r != end) {
-            const uint32_t i = (r & (RING_ENTRIES - 1)) * 2;
-            const uint32_t kind = ring[i], v = ring[i + 1];
-            if (kind == Q_GP0) {
-                gp0_exec(p, v);
-            } else if (kind == Q_GP1) {
-                gp1_exec(p, v);
+            const uint32_t kind = ring[r & RING_MASK];
+            if ((kind & 0xFF) == Q_GP0N) {
+                const uint32_t n = kind >> 8;
+                for (uint32_t k = 1; k <= n; k++) gp0_exec(p, ring[(r + k) & RING_MASK]);
+                r += n + 1;
+                since += n;
             } else {
-                if (busy_since) { /* the rendezvous is not work */
-                    uint64_t d = plat_time_us() - busy_since;
-                    busy_us[idx] += d;
-                    if (idx == 1) g_rt_prof.gpu += d;
+                const uint32_t v = ring[(r + 1) & RING_MASK];
+                r += 2;
+                since++;
+                if (kind == Q_GP0) {
+                    gp0_exec(p, v);
+                } else if (kind == Q_GP1) {
+                    gp1_exec(p, v);
+                } else {
+                    if (busy_since) { /* the rendezvous is not work */
+                        uint64_t d = plat_time_us() - busy_since;
+                        busy_us[idx] += d;
+                        if (idx == 1) g_rt_prof.gpu += d;
+                    }
+                    vblank_marker(kind, v);
+                    busy_since = plat_time_us();
+                    __atomic_store_n(&ring_r[idx], r, __ATOMIC_RELEASE);
                 }
-                vblank_marker(kind, v);
-                busy_since = plat_time_us();
-                __atomic_store_n(&ring_r[idx], r + 1, __ATOMIC_RELEASE);
             }
-            r++;
-            if ((r & 31) == 0) {
+            if (since >= 32) { /* about every 32 words, and a wake every 1024 */
+                since = 0;
                 __atomic_store_n(&ring_r[idx], r, __ATOMIC_RELEASE);
-                if (prod_wait && (r & 1023) == 0) plat_gpu_wake_producer();
+                if (prod_wait && (++pubs & 31) == 0) plat_gpu_wake_producer();
             }
         }
         ring_r_local[idx] = r;
@@ -900,27 +923,13 @@ void gpu_gp0_words(const uint32_t* w, uint32_t n) {
         for (uint32_t i = 0; i < n; i++) gpu_gp0(w[i]);
         return;
     }
-    uint32_t wp = ring_w;
-    if (wp + n - ring_tail() > RING_ENTRIES) {
-        plat_gpu_kick();
-        prod_wait = 1;
-        const uint64_t t0 = plat_time_us();
-        while (wp + n - ring_tail() > RING_ENTRIES) plat_gpu_idle();
-        g_rt_gpu_prod_wait_us += plat_time_us() - t0;
-        prod_wait = 0;
-    }
-    for (uint32_t i = 0; i < n; i++) {
-        const uint32_t j = ((wp + i) & (RING_ENTRIES - 1)) * 2;
-        ring[j] = Q_GP0;
-        ring[j + 1] = w[i];
-    }
-    __atomic_store_n(&ring_w, wp + n, __ATOMIC_RELEASE);
-    /* a worker that ran dry is woken once a batch built up */
-    const uint32_t r1 = ring_load(&ring_r[1]);
-    if ((wp - r1 < KICK_BATCH && wp + n - r1 >= KICK_BATCH) ||
-        (nworkers == 2 && wp - ring_load(&ring_r[0]) < KICK_BATCH &&
-         wp + n - ring_load(&ring_r[0]) >= KICK_BATCH))
-        plat_gpu_kick();
+    const uint32_t wp = ring_w;
+    ring_room(wp, n + 1);
+    ring[wp & RING_MASK] = Q_GP0N | n << 8;
+    const uint32_t at = (wp + 1) & RING_MASK, first = RING_WORDS - at < n ? RING_WORDS - at : n;
+    memcpy(ring + at, w, first * 4);
+    memcpy(ring, w + first, (n - first) * 4);
+    ring_publish(wp, n + 1);
 }
 
 void gpu_gp0(uint32_t w) {
