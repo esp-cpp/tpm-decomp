@@ -255,6 +255,13 @@ int main(int argc, char** argv) {
             if (fread(rec, 1, (size_t)n, f) != (size_t)n) return 1;
             fclose(f);
             printf("[host] gpu bench: %u us per vblank\n", (unsigned)rt_gpu_bench(rec, (uint32_t)(n / 4), 5));
+            if (getenv("RT_BENCH_VRAM")) { /* the VRAM it leaves, for comparing rasterizers */
+                FILE* o = fopen(getenv("RT_BENCH_VRAM"), "wb");
+                if (o) {
+                    fwrite(g_rt_vram, 2, 1024 * 512, o);
+                    fclose(o);
+                }
+            }
             return 0;
         }
         else if (!strcmp(argv[i], "--gpu-trace") && i + 1 < argc) rt_set_gpu_trace((uint32_t)atoi(argv[++i]));
