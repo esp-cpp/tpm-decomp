@@ -32,6 +32,7 @@ uint32_t hw_istat(void);
 uint32_t hw_imask(void);
 void hw_irq(int line); /* raise I_STAT bit `line` */
 void hw_vsync_poll(void); /* VSync(-1): skip a busy wait to the vblank */
+void hw_dma_finish(int ch); /* a DMA that waited is done */
 enum { IRQ_VBLANK = 0, IRQ_GPU = 1, IRQ_CDROM = 2, IRQ_DMA = 3, IRQ_TMR0 = 4,
        IRQ_TMR1 = 5, IRQ_TMR2 = 6, IRQ_SIO = 7, IRQ_SPU = 9 };
 
@@ -53,6 +54,23 @@ uint8_t cd_read8(uint32_t reg);
 void cd_write8(uint32_t reg, uint8_t v);
 void cd_dma(uint32_t dst, uint32_t words); /* data FIFO -> guest RAM */
 void cd_update(void);
+
+/* rt_mdec.c */
+uint32_t mdec_mem_bytes(int* count);
+void mdec_reset(void);
+void mdec_free(void);
+void mdec_write(uint32_t reg, uint32_t v);
+uint32_t mdec_read(uint32_t reg);
+/* each 1 when done now, 0 when it waits (hw_dma_finish completes it) */
+int mdec_dma_in(uint32_t addr, uint32_t words);
+int mdec_dma_out(uint32_t addr, uint32_t words);
+void mdec_native_begin(const uint32_t* words, uint32_t n);
+int mdec_native_mb(uint16_t* px);
+
+/* rt_movie.c */
+void xa_reset(void);
+void xa_decode_sector(const uint8_t* raw);
+int rt_movies_on(void);
 
 /* rt_hle.c */
 void hle_vblank(void);

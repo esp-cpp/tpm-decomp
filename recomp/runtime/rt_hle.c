@@ -108,15 +108,16 @@ void hle_MemCardSync(void) {
 }
 
 /* ---- 0x80083F00: call the loaded overlay (the FMV.CPE movie player) ----
- * The original saves gp/ra in the scratchpad around `jalr a0`. Movies need
- * MDEC, which is not emulated yet: by default they are skipped (the caller
- * ignores the result). RT_MOVIES=1 plays them through the recompiled
- * overlay. */
+ * The original saves gp/ra in the scratchpad around `jalr a0`. The overlay
+ * plays its movie through rt_movie.c (hle_PlayMovie); with movies off
+ * (rt_set_movies, RT_MOVIES=0) or without the recompiled overlay the call
+ * is skipped (the caller ignores the result). */
 #include <stdlib.h>
+int rt_dispatch_known(uint32_t addr);
 void hle_CallOverlay(void) {
-    static int movies = -1;
-    if (movies < 0) movies = getenv("RT_MOVIES") != NULL;
-    if (!movies) {
+    int movies = rt_movies_on();
+    if (getenv("RT_MOVIES")) movies = atoi(getenv("RT_MOVIES"));
+    if (!movies || !rt_dispatch_known(A0)) {
         RT_LOG("movie skipped");
         V0 = 0;
         return;

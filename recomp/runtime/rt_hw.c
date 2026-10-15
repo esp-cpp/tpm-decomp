@@ -72,6 +72,8 @@ static uint32_t rc_value(int n) {
 }
 
 /* ---- DMA ---- */
+static void dma_finish(int ch);
+void hw_dma_finish(int ch) { dma_finish(ch); }
 static void dma_finish(int ch) {
     dma_chcr[ch] &= ~((1u << 24) | (1u << 28));
     if (dicr & (1u << (16 + ch))) {
@@ -144,14 +146,12 @@ static void dma_start(int ch) {
         }
         break;
     }
-    case 0: case 1: { /* MDEC: not emulated; output black */
-        static int warned;
-        if (!warned++) RT_LOG("MDEC DMA: not emulated (movies are black)");
-        if (ch == 1) {
-            uint32_t bcr = dma_bcr[1];
-            words = (bcr & 0xFFFF) * ((bcr >> 16) ? (bcr >> 16) : 1);
-            for (uint32_t i = 0; i < words; i++) SW(0x80000000u | ((dma_madr[1] & 0x1FFFFCu) + 4 * i), 0);
-        }
+    case 0: case 1: { /* MDEC (rt_mdec.c) */
+        uint32_t bcr = dma_bcr[ch];
+        words = (bcr & 0xFFFF) * ((bcr >> 16) ? (bcr >> 16) : 1);
+        const int now = ch == 0 ? mdec_dma_in(dma_madr[0] & 0x1FFFFCu, words)
+                                : mdec_dma_out(dma_madr[1] & 0x1FFFFCu, words);
+        if (!now) return; /* the MDEC completes it later */
         break;
     }
     default:
@@ -234,8 +234,7 @@ uint32_t mem_read_slow(uint32_t a, int size) {
         }
         if (o == 0x810) return gpu_read();
         if (o == 0x814) return gpu_stat();
-        if (o == 0x820) return 0;
-        if (o == 0x824) return 0x80040000u; /* MDEC: FIFO empty, idle */
+        if (o == 0x820 || o == 0x824) return mdec_read((o - 0x820) >> 2);
         if (o >= 0xE00 && o < 0x1000) return 0;
         if (o >= 0xC00 && o < 0xE00) {
             spu_update();
@@ -307,7 +306,7 @@ void mem_write_slow(uint32_t a, uint32_t v, int size) {
         }
         if (o == 0x810) { gpu_gp0(v); return; }
         if (o == 0x814) { gpu_gp1(v); return; }
-        if (o == 0x820 || o == 0x824) return; /* MDEC */
+        if (o == 0x820 || o == 0x824) { mdec_write((o - 0x820) >> 2, v); return; }
         if (o >= 0xC00 && o < 0xE00) {
             uint32_t r = o - 0xC00;
             spu_update(); /* register writes take effect at the current time */
@@ -336,6 +335,7 @@ void hw_free(void) {
     spu_state = NULL;
 #endif
     gpu_free();
+    mdec_free();
 }
 
 void hw_reset(void) {
@@ -356,6 +356,7 @@ void hw_reset(void) {
     spu_next = 0;
     gpu_reset();
     cd_reset();
+    mdec_reset();
 }
 
 /* VSync(-1) twice in a row with no vblank and almost no time between, from

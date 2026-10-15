@@ -108,6 +108,11 @@ void rt_dispatch(uint32_t t) {
     fn();
 }
 
+/* a recompiled function there (an overlay's only with recomp.py --disc) */
+int rt_dispatch_known(uint32_t t) {
+    return find_func(t) || find_func((t & 0x1FFFFFFFu) | 0x80000000u);
+}
+
 void rt_jump(uint32_t t, uint32_t pc) {
     if (t == 0xA0 || t == 0xB0 || t == 0xC0 || find_func(t) ||
         find_func((t & 0x1FFFFFFFu) | 0x80000000u)) {
@@ -397,7 +402,7 @@ uint32_t gpu_mem_bytes(int* count);
 size_t Psyz_SpuStateSize(void);
 uint32_t rt_mem_bytes(int* count) {
     *count = 1;
-    uint32_t n = RAM_ALLOC + gpu_mem_bytes(count);
+    uint32_t n = RAM_ALLOC + gpu_mem_bytes(count) + mdec_mem_bytes(count);
 #ifdef ESP_PLATFORM
     n += (uint32_t)Psyz_SpuStateSize();
     *count += 1;

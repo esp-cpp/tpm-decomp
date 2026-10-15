@@ -83,6 +83,8 @@ Next for the recompiled game:
 
 - [ ] the Tab5: first run, then performance (rasterizer on the second core,
       as the MGS port does)
-- [ ] MDEC (movies) and XA-ADPCM (speech and music streamed from the disc)
+- [x] MDEC (movies) and XA-ADPCM (the movies' audio; in-game speech and
+      music come through ordinary reads): the movies play natively
+      (`recomp/runtime/rt_movie.c`)
 - [ ] memory card (save files on the SD card)
 - [ ] root-counter interrupts, if anything uses them

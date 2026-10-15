@@ -129,6 +129,9 @@ void rt_gpu_bench_mode(int skip); /* 1: no span pixels, 2: triangle setup only, 
 extern uint16_t* g_rt_vram; /* 1024 x 512, allocated by rt_boot */
 
 uint32_t rt_frame_count(void);
+/* the cutscene movies (rt_movie.c): on by default; off skips them, as a
+ * benchmark's fixed timeline needs */
+void rt_set_movies(int on);
 
 /* Where the game thread's time went, in microseconds since boot. */
 typedef struct {

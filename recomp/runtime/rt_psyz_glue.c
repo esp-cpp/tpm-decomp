@@ -35,4 +35,5 @@ union SpuUnion* _spu_RXX = &spu_regs;
 void Psyz_RcntAdd(int frames) { (void)frames; }
 #endif
 /* CD-DA / XA audio into the SPU mix: none yet */
-size_t Psyz_CdPullSamples(short* out, size_t frames) { (void)out; (void)frames; return 0; }
+size_t xa_pull(int16_t* out, size_t frames); /* rt_movie.c: XA audio */
+size_t Psyz_CdPullSamples(short* out, size_t frames) { return xa_pull(out, frames); }

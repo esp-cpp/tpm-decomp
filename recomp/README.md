@@ -44,8 +44,16 @@ player overlay, your disc image).
   and recompiled too.
 - **HLE**: `hle.us.txt` lists functions replaced by native code
   (`runtime/rt_hle.c`): the BIOS patches, libmcrd (no memory card yet), the
-  movie trampoline (movies are skipped until MDEC is emulated; `RT_MOVIES=1`
-  runs them), and a wrapper on `PadInitDirect`.
+  movie player's play function (`runtime/rt_movie.c`: the movies natively,
+  see below), and a wrapper on `PadInitDirect`.
+- **Movies**: the overlay streams STR files through libcd's ring, which
+  holds one frame: the game only keeps up at the hardware's exact pace. So
+  its play function is replaced: the movie's sectors are read at double
+  speed in emulated time, each frame goes through the game's own (recompiled)
+  VLC decoder and the MDEC's decoding (`rt_mdec.c`) into VRAM, and the XA
+  audio sectors are decoded into the SPU's CD input. Start or Cross skips;
+  `RT_MOVIES=0` (or `rt_set_movies(0)`) skips them all, as the overlay's
+  absence (no `--disc`) does.
 
 ## The runtime (`runtime/`)
 
@@ -54,7 +62,9 @@ player overlay, your disc image).
 | `recomp_rt.h` | what generated code sees: `g_cpu`, memory accessors, `DIV`, hooks |
 | `rt_core.c` | dispatch, traps, COP0, interrupt delivery (`HookEntryInt` / `ReturnFromException`), the clock, boot |
 | `rt_bios.c` | the A0/B0/C0 calls: C library, heap, kernel events, printf |
-| `rt_hw.c` | I/O space: interrupt controller, DMA, root counters, SPU (psyz's register-level emulator), SIO/MDEC stand-ins |
+| `rt_hw.c` | I/O space: interrupt controller, DMA, root counters, SPU (psyz's register-level emulator), SIO stand-in |
+| `rt_mdec.c` | the MDEC: commands, tables, run-length decoding, IDCT, YUV to 15/24-bit macroblocks, DMA0/1 |
+| `rt_movie.c` | the movies natively (above), XA-ADPCM decoding into the SPU's CD input |
 | `rt_gpu.c` | GP0/GP1 ports, VRAM transfers, display state, in front of psyz's software rasterizer |
 | `rt_cdrom.c` | the CD-ROM controller over a raw `.bin` (commands, INT1-5, data FIFO, XA audio sectors skipped) |
 | `rt_hle.c` | the native replacements, and the pad buffers filled every vblank |
@@ -93,8 +103,8 @@ done; real-time mode only throttles), so the same `--press` script gives the
 same frames on every machine: `--gpu-trace N` on the desktop and the board's
 GPU trace can be diffed line by line.
 
-Not yet: movies (MDEC), XA-ADPCM audio (speech / music streamed from the
-disc), memory cards, root-counter interrupts.
+Not yet: memory cards, root-counter interrupts. (XA audio outside the
+movies: TPM streams none.)
 
 Runner options: `--realtime` (pace to the wall clock), `--async-gpu` (the
 GPU's command stream on a second thread, as on the board), `--gpu-trace N`.

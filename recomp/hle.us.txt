@@ -27,9 +27,12 @@
 0x800694F4 MemCardDeleteFile
 0x800696B0 MemCardFormat
 0x8006973C MemCardUnformat
-# the movie player's trampoline (calls the FMV.CPE overlay): rt_hle.c can
-# skip movies until MDEC is emulated
+# the movie player's trampoline (calls the FMV.CPE overlay): rt_hle.c skips
+# movies when they are off or the overlay was not recompiled
 0x80083F00 CallOverlay
+# the overlay's play function (movie index, table): played natively by
+# rt_movie.c (the original needs the hardware's timing to the sector)
+0x80160C7C PlayMovie
 # libetc's VSync: VSync(-1) polled in a loop is the game waiting for the
 # next vblank; the wrapper lets emulated time go there directly
 0x80060D38 VSync wrap
