@@ -8,6 +8,7 @@
  * for them, straight into guest RAM. A DMA1 started before its input
  * arrived waits until DMA0 brings it. Results need not match the hardware's
  * IDCT bit for bit, only look like it. */
+#include <math.h>
 #include <string.h>
 
 #include "recomp_rt.h"
@@ -78,10 +79,143 @@ static inline uint16_t in_half(void) {
 }
 static inline int s10(uint32_t v) { return (int)((v & 0x3FF) ^ 0x200) - 0x200; }
 
-/* one 8x8 block: run-length to coefficients, then the IDCT */
+/* The usual scale table is the orthonormal DCT's (a(z) cos((2x+1) z pi/16),
+ * times 2^16): its two passes are then the JPEG IDCT, which libjpeg's
+ * integer algorithm ("islow", Loeffler-Ligtenberg-Moschytz) does in 12
+ * multiplications per eight points instead of 64. Its rounding is its
+ * own (within a level of the matrix's). */
+static int scale_is_std;
+static int scale_standard(void) {
+    for (int z = 0; z < 8; z++)
+        for (int x = 0; x < 8; x++) {
+            const double a = z ? 0.5 : 0.35355339059327373;
+            const int want = (int)lround(a * cos((2 * x + 1) * z * 3.14159265358979323846 / 16) * 65536.0);
+            const int d = scale[x + z * 8] - want;
+            if (d < -2 || d > 2) return 0;
+        }
+    return 1;
+}
+
+#define FIXB 13
+#define P1B 2
+#define F0298 2446
+#define F0390 3196
+#define F0541 4433
+#define F0765 6270
+#define F0899 7373
+#define F1175 9633
+#define F1501 12299
+#define F1847 15137
+#define F1961 16069
+#define F2053 16819
+#define F2562 20995
+#define F3072 25172
+#define DESC(x, n) (((x) + (1 << ((n) - 1))) >> (n))
+
+/* c: coefficients row-major (row = vertical frequency); out: -128..127 */
+static void idct_fast(const int32_t* c, int16_t* out) {
+    int32_t ws[64];
+    for (int col = 0; col < 8; col++) {
+        const int32_t* in = c + col;
+        int32_t* w = ws + col;
+        if (!in[8] && !in[16] && !in[24] && !in[32] && !in[40] && !in[48] && !in[56]) {
+            const int32_t dc = in[0] << P1B;
+            for (int r = 0; r < 8; r++) w[r * 8] = dc;
+            continue;
+        }
+        int32_t z2 = in[16], z3 = in[48];
+        int32_t z1 = (z2 + z3) * F0541;
+        int32_t tmp2 = z1 - z3 * F1847, tmp3 = z1 + z2 * F0765;
+        z2 = in[0];
+        z3 = in[32];
+        int32_t tmp0 = (z2 + z3) << FIXB, tmp1 = (z2 - z3) << FIXB;
+        const int32_t t10 = tmp0 + tmp3, t13 = tmp0 - tmp3, t11 = tmp1 + tmp2, t12 = tmp1 - tmp2;
+        tmp0 = in[56];
+        tmp1 = in[40];
+        tmp2 = in[24];
+        tmp3 = in[8];
+        z1 = tmp0 + tmp3;
+        z2 = tmp1 + tmp2;
+        z3 = tmp0 + tmp2;
+        int32_t z4 = tmp1 + tmp3;
+        const int32_t z5 = (z3 + z4) * F1175;
+        tmp0 *= F0298;
+        tmp1 *= F2053;
+        tmp2 *= F3072;
+        tmp3 *= F1501;
+        z1 *= -F0899;
+        z2 *= -F2562;
+        z3 = z3 * -F1961 + z5;
+        z4 = z4 * -F0390 + z5;
+        tmp0 += z1 + z3;
+        tmp1 += z2 + z4;
+        tmp2 += z2 + z3;
+        tmp3 += z1 + z4;
+        w[0] = DESC(t10 + tmp3, FIXB - P1B);
+        w[56] = DESC(t10 - tmp3, FIXB - P1B);
+        w[8] = DESC(t11 + tmp2, FIXB - P1B);
+        w[48] = DESC(t11 - tmp2, FIXB - P1B);
+        w[16] = DESC(t12 + tmp1, FIXB - P1B);
+        w[40] = DESC(t12 - tmp1, FIXB - P1B);
+        w[24] = DESC(t13 + tmp0, FIXB - P1B);
+        w[32] = DESC(t13 - tmp0, FIXB - P1B);
+    }
+    for (int row = 0; row < 8; row++) {
+        const int32_t* w = ws + row * 8;
+        int16_t* o = out + row * 8;
+        int32_t v[8];
+        if (!w[1] && !w[2] && !w[3] && !w[4] && !w[5] && !w[6] && !w[7]) {
+            const int32_t dc = DESC(w[0], P1B + 3);
+            for (int i = 0; i < 8; i++) v[i] = dc;
+        } else {
+            int32_t z2 = w[2], z3 = w[6];
+            int32_t z1 = (z2 + z3) * F0541;
+            int32_t tmp2 = z1 - z3 * F1847, tmp3 = z1 + z2 * F0765;
+            int32_t tmp0 = (w[0] + w[4]) << FIXB, tmp1 = (w[0] - w[4]) << FIXB;
+            const int32_t t10 = tmp0 + tmp3, t13 = tmp0 - tmp3, t11 = tmp1 + tmp2, t12 = tmp1 - tmp2;
+            tmp0 = w[7];
+            tmp1 = w[5];
+            tmp2 = w[3];
+            tmp3 = w[1];
+            z1 = tmp0 + tmp3;
+            z2 = tmp1 + tmp2;
+            z3 = tmp0 + tmp2;
+            int32_t z4 = tmp1 + tmp3;
+            const int32_t z5 = (z3 + z4) * F1175;
+            tmp0 *= F0298;
+            tmp1 *= F2053;
+            tmp2 *= F3072;
+            tmp3 *= F1501;
+            z1 *= -F0899;
+            z2 *= -F2562;
+            z3 = z3 * -F1961 + z5;
+            z4 = z4 * -F0390 + z5;
+            tmp0 += z1 + z3;
+            tmp1 += z2 + z4;
+            tmp2 += z2 + z3;
+            tmp3 += z1 + z4;
+            const int sh = FIXB + P1B + 3;
+            v[0] = DESC(t10 + tmp3, sh);
+            v[7] = DESC(t10 - tmp3, sh);
+            v[1] = DESC(t11 + tmp2, sh);
+            v[6] = DESC(t11 - tmp2, sh);
+            v[2] = DESC(t12 + tmp1, sh);
+            v[5] = DESC(t12 - tmp1, sh);
+            v[3] = DESC(t13 + tmp0, sh);
+            v[4] = DESC(t13 - tmp0, sh);
+        }
+        for (int i = 0; i < 8; i++) o[i] = (int16_t)(v[i] < -128 ? -128 : v[i] > 127 ? 127 : v[i]);
+    }
+}
+
+/* one 8x8 block: run-length to coefficients, then the IDCT. The products
+ * fit in 32 bits (coefficients within +-0x400, the table's 16 bits, eight
+ * of them); the first pass visits only the coefficients there are (a block
+ * has a handful), the second only over the rows the first filled. */
 static int rl_block(int16_t* blk, const uint8_t* qt) {
-    int32_t c[64];
-    memset(c, 0, sizeof c);
+    int32_t cv[64]; /* the coefficients there are: values and positions (k only grows: no repeats) */
+    uint8_t nz[64];
+    int nnz = 0;
     uint16_t n;
     do {
         if ((in_pos >> 1) >= in_len) return 0;
@@ -93,27 +227,59 @@ static int rl_block(int16_t* blk, const uint8_t* qt) {
     for (;;) {
         if (val < -0x400) val = -0x400;
         if (val > 0x3FF) val = 0x3FF;
-        c[q ? zagzig[k] : k] = val;
+        if (val) {
+            cv[nnz] = val;
+            nz[nnz++] = (uint8_t)(q ? zagzig[k] : k);
+        }
         n = in_half();
         k += (n >> 10) + 1;
         if (k > 63) break;
         val = q ? (s10(n) * qt[k] * q + 4) / 8 : s10(n) * 2;
     }
-    /* two passes of the scale table (s.15-ish cosines), each transposing */
+    if (scale_is_std && nnz > 2) {
+        int32_t c[64];
+        memset(c, 0, sizeof c);
+        for (int i = 0; i < nnz; i++) c[nz[i]] = cv[i];
+        idct_fast(c, blk);
+        return 1;
+    }
+    /* t[x + 8y] = sum_z c[y + 8z] * scale[x + 8z]: only the rows y with a
+     * coefficient in them */
     int32_t t[64];
-    for (int x = 0; x < 8; x++)
-        for (int y = 0; y < 8; y++) {
-            int64_t sum = 0;
-            for (int z = 0; z < 8; z++) sum += (int64_t)c[y + z * 8] * scale[x + z * 8];
-            t[x + y * 8] = (int32_t)((sum + 0x8000) >> 16);
+    uint8_t rl[8]; /* the rows filled, in order (no ctz: a library call without Zbb) */
+    int nr = 0;
+    unsigned rows = 0;
+    for (int i = 0; i < nnz; i++) {
+        const int y = nz[i] & 7, z = nz[i] >> 3;
+        int32_t* a = &t[y * 8];
+        if (!(rows >> y & 1)) {
+            rows |= 1u << y;
+            rl[nr++] = (uint8_t)y;
+            memset(a, 0, 32);
         }
-    for (int x = 0; x < 8; x++)
-        for (int y = 0; y < 8; y++) {
-            int64_t sum = 0;
-            for (int z = 0; z < 8; z++) sum += (int64_t)t[y + z * 8] * scale[x + z * 8];
-            int v = (int)((sum + 0x8000) >> 16);
+        const int32_t v = cv[i];
+        const int16_t* sr = &scale[z * 8];
+        for (int x = 0; x < 8; x++) a[x] += v * sr[x];
+    }
+    for (int j = 0; j < nr; j++) {
+        int32_t* a = &t[rl[j] * 8];
+        for (int x = 0; x < 8; x++) a[x] = (a[x] + 0x8000) >> 16;
+    }
+    /* out[x + 8y] = sum_z t[y + 8z] * scale[x + 8z], z over those rows */
+    for (int y = 0; y < 8; y++) {
+        int32_t s8[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        for (int j = 0; j < nr; j++) {
+            const int z = rl[j];
+            const int32_t v = t[y + z * 8];
+            if (!v) continue;
+            const int16_t* sr = &scale[z * 8];
+            for (int x = 0; x < 8; x++) s8[x] += v * sr[x];
+        }
+        for (int x = 0; x < 8; x++) {
+            const int v = (s8[x] + 0x8000) >> 16;
             blk[x + y * 8] = (int16_t)(v < -128 ? -128 : v > 127 ? 127 : v);
         }
+    }
     return 1;
 }
 
@@ -147,6 +313,32 @@ static int decode_mb(void) {
         if (!rl_block(yb[i], qt_y)) return 0;
     uint8_t* o8 = (uint8_t*)out_mb;
     uint16_t* o16 = (uint16_t*)out_mb;
+    if (d == 3 && !sgn) { /* 15-bit, unsigned (the movies): the chroma once per 2x2, clamps from a table */
+        static uint8_t c5[640]; /* (clamp(v, -128, 127) + 128) >> 3, at v + 320 */
+        if (!c5[639]) for (int v = -320; v < 320; v++) c5[v + 320] = (uint8_t)((clamp8s(v) + 128) >> 3);
+        const uint16_t top = (uint16_t)(b15 << 15);
+        for (int by = 0; by < 2; by++)
+            for (int bx = 0; bx < 2; bx++) {
+                const int16_t* Yb = yb[bx + by * 2];
+                for (int cy = 0; cy < 4; cy++)
+                    for (int cx = 0; cx < 4; cx++) {
+                        const int ci = (bx * 4 + cx) + (by * 4 + cy) * 8;
+                        const int R = cr[ci], B = cb[ci];
+                        const int r = ((1436 * R) >> 10) + 320, g = ((-352 * B - 731 * R) >> 10) + 320,
+                                  b = ((1815 * B) >> 10) + 320;
+                        for (int dy = 0; dy < 2; dy++) {
+                            const int16_t* yr = &Yb[(cy * 2 + dy) * 8 + cx * 2];
+                            uint16_t* o = &o16[(by * 8 + cy * 2 + dy) * 16 + bx * 8 + cx * 2];
+                            for (int dx = 0; dx < 2; dx++) {
+                                const int Y = yr[dx];
+                                o[dx] = (uint16_t)(c5[Y + r] | (c5[Y + g] << 5) | (c5[Y + b] << 10) | top);
+                            }
+                        }
+                    }
+            }
+        out_len = 128;
+        return 1;
+    }
     for (int py = 0; py < 16; py++)
         for (int px = 0; px < 16; px++) {
             const int ci = (px >> 1) + (py >> 1) * 8;
@@ -222,7 +414,10 @@ static void param_word(uint32_t v) {
     case 3: /* scale table: 64 halfwords */
         scale[param_n++] = (int16_t)v;
         scale[param_n++] = (int16_t)(v >> 16);
-        if (--in_need == 0) command_done();
+        if (--in_need == 0) {
+            command_done();
+            scale_is_std = scale_standard();
+        }
         break;
     default: break;
     }

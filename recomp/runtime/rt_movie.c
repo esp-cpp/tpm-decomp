@@ -142,13 +142,13 @@ static void upload_column(const uint16_t* colpx, int first, int step, int rows, 
     gpu_gp0(0xA0000000u);
     gpu_gp0(((uint32_t)y << 16) | (uint32_t)x);
     gpu_gp0(((uint32_t)rows << 16) | 16u);
-    uint32_t buf[128];
+    uint32_t buf[256]; /* (the queue takes up to 256 words at once) */
     int n = 0;
     for (int i = 0; i < rows; i++) {
         const uint16_t* row = &colpx[(first + i * step) * 16];
         for (int c = 0; c < 16; c += 2) {
             buf[n++] = row[c] | ((uint32_t)row[c + 1] << 16);
-            if (n == 128) {
+            if (n == 256) {
                 gpu_gp0_words(buf, (uint32_t)n);
                 n = 0;
             }
