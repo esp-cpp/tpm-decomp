@@ -99,7 +99,7 @@ void Draw_Reset(void) {
  * only its band of rows; everything below that is per worker lives in a
  * Parser, indexed like the rasterizer's own per-core state (soft_core()). */
 static void gpu_drain(void);
-#define RING_WORDS (1u << 17)
+#define RING_WORDS (1u << 16)
 static uint32_t* ring;             /* the async queue: entries of words (below) */
 static uint32_t ring_w, ring_r[2]; /* words; producer / each worker (published) */
 static uint32_t ring_r_local[2];   /* each worker's own position */
