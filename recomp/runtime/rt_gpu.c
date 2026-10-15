@@ -285,6 +285,30 @@ void rt_snap_restored(void) {
     Draw_FlushCaches();
 #endif
 }
+static inline uint32_t ring_tail(void);
+/* the GPU queue holds nothing (the workers drained it) */
+int rt_gpu_queue_empty(void) { return !async_on || !ring || ring_tail() == ring_w; }
+/* plat_alloc'd ranges a state need not hold right now: the queue once it is
+ * empty, and the transfer buffer past the transfer in progress (if any) */
+int rt_snap_dead(void** ptr, uint32_t* size, int max) {
+    int n = 0;
+    if (ring && rt_gpu_queue_empty() && n < max) {
+        ptr[n] = ring;
+        size[n++] = RING_WORDS * sizeof(uint32_t);
+    }
+    uint32_t live = 0;
+    for (int i = 0; i < 2; i++)
+        if (P[i].xfer_in || P[i].xfer_out) {
+            const uint32_t b = P[i].xfer_words * 4;
+            if (b > live) live = b;
+        }
+    const uint32_t all = VRAM_W * VRAM_H * 2 + 4;
+    if (xfer_buf && live < all && n < max) {
+        ptr[n] = (uint8_t*)xfer_buf + live;
+        size[n++] = all - live;
+    }
+    return n;
+}
 
 void gpu_free(void) {
     gpu_drain();

@@ -83,6 +83,12 @@ uint32_t rt_mem_bytes(int* count);
  * restore; then rt_snap_restored() marks the caches stale. */
 int rt_snap_preserve(void*** out, int max);
 void rt_snap_restored(void);
+/* With the game stopped at its checkpoint: once rt_gpu_queue_empty() (the
+ * workers drained the GPU queue), rt_snap_dead lists the plat_alloc'd ranges
+ * whose contents the state does not need (a restore leaves them as they
+ * are). */
+int rt_gpu_queue_empty(void);
+int rt_snap_dead(void** ptr, uint32_t* size, int max);
 /* After rt_boot returned: release everything the runtime allocated. */
 void rt_shutdown(void);
 /* Ask the game's thread to leave rt_boot at its next poll. */
