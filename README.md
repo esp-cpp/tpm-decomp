@@ -16,6 +16,12 @@ Two goals, in this order:
 
 **The game runs** (natively, on the desktop and the Tab5) through a static
 recompilation of the whole executable: see [recomp/](recomp/README.md).
+The recompiler translates the executable mechanically into C, so its output
+is the game's code in another form. It is generated at build time from your
+own copy of `SLUS_008.84` and is never committed or distributed. That is a
+stopgap: the aim is the matching decompilation below, which can replace the
+recompiled code one function at a time until the port builds entirely from
+hand-written source. Contributions are very welcome.
 
 https://github.com/user-attachments/assets/a1001e13-553d-4048-aa23-dba5409316e3
 
