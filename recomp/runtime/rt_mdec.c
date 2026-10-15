@@ -16,7 +16,7 @@
 #include "rt_platform.h"
 
 /* the compressed words of the decode command in progress */
-#define IN_WORDS (64 * 1024u)
+#define IN_WORDS (32 * 1024u) /* the most a frame of the movies needs (rt_movie.c) */
 static uint32_t* in_buf;
 static uint32_t in_len, in_need, in_pos; /* words held, still to come, read */
 
