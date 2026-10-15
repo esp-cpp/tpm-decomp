@@ -15,7 +15,17 @@ Two goals, in this order:
    Solid port runs [mgs_reversing](https://github.com/FoxdieTeam/mgs_reversing).
 
 **The game runs** (natively, on the desktop and the Tab5) through a static
-recompilation of the whole executable: see [recomp/](recomp/README.md). The
+recompilation of the whole executable: see [recomp/](recomp/README.md).
+
+https://github.com/user-attachments/assets/a1001e13-553d-4048-aa23-dba5409316e3
+
+<p>
+<img src="docs/images/tpm-conference.jpg" width="32%"> <img src="docs/images/tpm-corridor.jpg" width="32%"> <img src="docs/images/tpm-pause.jpg" width="32%">
+</p>
+
+On the M5Stack Tab5 (ESP32-P4, two 360 MHz RISC-V cores) it plays at about
+27 fps in the levels against the game's 30, with sound, music, speech, the
+full-motion movies (MDEC + XA) and save states. The
 decompilation below continues alongside it; decompiled functions can replace
 recompiled ones one at a time.
 
