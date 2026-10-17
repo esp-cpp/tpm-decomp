@@ -90,7 +90,7 @@ the asm of functions it does not see in an `INCLUDE_ASM` under
 
 | | |
 |---|---|
-| `tools/extract_disc.py` | list / extract the ISO9660 files of a raw `.bin` (Form 2 files as raw 2336-byte sectors) |
+| `tools/extract_disc.py` | list / extract the ISO9660 files of a raw `.bin`, all or the ones named (Form 2 files as raw 2336-byte sectors) |
 | `tools/tpm_files.py` | the game's own file table: list / extract `FILE.000` by name |
 | `tools/psyq_match.py` | find PSY-Q library objects by signature, write splat symbols |
 | `tools/gte_words.py` | post-split pass: GTE commands as raw `.word`s (their encodings are not all canonical) |

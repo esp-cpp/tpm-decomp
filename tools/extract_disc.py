@@ -2,6 +2,7 @@
 
     python extract_disc.py <disc.bin>                 # list
     python extract_disc.py <disc.bin> <outdir>        # extract everything
+    python extract_disc.py <disc.bin> <outdir> SLUS_008.84 ...   # just these
 
 Form 1 files are written as their 2048-byte user data. Files whose sectors are
 Mode 2 Form 2 (XA audio, STR movies) are written as raw 2336-byte sectors
@@ -67,7 +68,14 @@ class Disc(object):
 def main():
     disc = Disc(sys.argv[1])
     outdir = sys.argv[2] if len(sys.argv) > 2 else None
+    only = {n.upper() for n in sys.argv[3:]}
+    found = set()
     for path, lba, size in disc.walk():
+        if only:
+            hit = only & {path.upper(), os.path.basename(path).upper()}
+            if not hit:
+                continue
+            found |= hit
         form2 = size and disc.is_form2(lba)
         print("%-40s lba %7d size %10d%s" % (path, lba, size, "  (form2)" if form2 else ""))
         if not outdir:
@@ -84,6 +92,9 @@ def main():
                 for s in range(nsec):
                     out.write(disc.sector(lba + s)[:min(2048, left)])
                     left -= 2048
+    missing = only - found
+    if missing:
+        sys.exit("extract_disc: not on the disc: " + ", ".join(sorted(missing)))
 
 
 if __name__ == "__main__":
