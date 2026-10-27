@@ -7,7 +7,9 @@
  *     --vram            dump all of VRAM (1024x512) instead of the display
  *     --wav FILE        record the SPU's output
  *     --press F:BUTTONS hold buttons from frame F for 10 frames
- *                       (BUTTONS: start,cross,circle,square,triangle,up,...)
+ *                       (BUTTONS: start,cross,circle,square,triangle,up,...;
+ *                       RT_PRESS_HOLD=N holds them N frames)
+ *     --memcard FILE    a memory card in port 1 (a 128 KB image; made if missing)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +47,8 @@ void plat_gpu_wake_producer(void) {}
 static volatile int gpu_stop;
 static void* gpu_thread(void* arg) { rt_gpu_worker_n(&gpu_stop, (int)(intptr_t)arg); return NULL; }
 void plat_pause_wait(void) {}
+static const char* memcard;
+const char* plat_memcard_path(int port) { return port == 0 ? memcard : NULL; }
 
 static FILE* wav;
 static uint32_t wav_frames;
@@ -71,12 +75,13 @@ uint64_t plat_time_us(void) {
     return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
 }
 
+static uint32_t press_hold = 10; /* vblanks a press is held (RT_PRESS_HOLD) */
 uint16_t plat_pad_buttons(int port) {
     if (port) return 0;
     uint32_t f = rt_frame_count();
     uint16_t b = 0;
     for (int i = 0; i < npresses; i++)
-        if (f >= presses[i].frame && f < presses[i].frame + 10) b |= presses[i].buttons;
+        if (f >= presses[i].frame && f < presses[i].frame + press_hold) b |= presses[i].buttons;
     return b;
 }
 
@@ -208,7 +213,7 @@ void plat_display_ready(const RtDisplay* d) {
         printf("[host] deepest guest call chain: %d\n", g_shadow_max);
 #endif
         if (stale) printf("[host] frameskip: %u frames skipped, %u vblanks held\n", g_rt_gpu_skipped, stale);
-        printf("[host] %d frames: done\n", max_frames);
+        printf("[host] %d frames: done (vblank %u)\n", max_frames, (unsigned)rt_frame_count());
         fflush(stdout);
         exit(0);
     }
@@ -228,14 +233,16 @@ static uint16_t parse_buttons(const char* s) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--realtime] [--async-gpu] [--gpu-workers 2] [--frameskip N]\n", argv[0]);
+        fprintf(stderr, "usage: %s <SLUS_008.84> <disc.bin> [--frames N] [--dump DIR] [--every N] [--vram] [--press F:BTN] [--memcard FILE] [--realtime] [--async-gpu] [--gpu-workers 2] [--frameskip N]\n", argv[0]);
         return 2;
     }
+    if (getenv("RT_PRESS_HOLD")) press_hold = (uint32_t)atoi(getenv("RT_PRESS_HOLD"));
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--dump") && i + 1 < argc) dump_dir = argv[++i];
         else if (!strcmp(argv[i], "--every") && i + 1 < argc) every = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--vram")) dump_vram = 1;
+        else if (!strcmp(argv[i], "--memcard") && i + 1 < argc) memcard = argv[++i];
         else if (!strcmp(argv[i], "--realtime")) rt_set_realtime(1);
         else if (!strcmp(argv[i], "--async-gpu")) async_gpu = 1;
         else if (!strcmp(argv[i], "--frameskip") && i + 1 < argc) rt_gpu_set_frameskip(atoi(argv[++i]));

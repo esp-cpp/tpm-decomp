@@ -63,6 +63,10 @@ void plat_free(void* p);
  * that long; less is fine). */
 void plat_sleep_us(uint32_t us);
 
+/* The memory card in port 0/1: a 128 KB card image file (psyz/mcd.h; made,
+ * formatted, the first time the game looks), or NULL for an empty port. */
+const char* plat_memcard_path(int port);
+
 /* Called on the game's thread while a pause is requested (rt_pause(1)):
  * block until it is lifted. */
 void plat_pause_wait(void);

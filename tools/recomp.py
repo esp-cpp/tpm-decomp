@@ -2224,6 +2224,10 @@ class Emitter:
                 ret = self.sync_out_mask(self.flow.ret_sync(f, self.written_mask)) \
                     if self.flow else self.sync_out()
                 out.append("    if (t_ == ra_in) { %sreturn; }" % ret)
+            else:
+                # hand-written code that keeps its return address in another
+                # register (0x80054D44: `addu $a3, $ra, $zero` ... `jr $a3`)
+                out.append("    if (t_ == ra_in) { %sreturn; }" % self.sync_out())
             cases = "".join("case 0x%08Xu: goto L_%08X; " % (t, t)
                             for t in f.jr_targets)
             if cases:

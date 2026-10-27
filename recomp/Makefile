@@ -16,7 +16,7 @@ CFLAGS := $(OPT) -g -Iruntime -I$(BUILD)/gen -I$(PSYZ)/include -I$(PSYZ)/src \
 
 NGEN := 16
 GEN := $(foreach n,$(shell seq -w 0 $$(($(NGEN)-1))),$(BUILD)/gen/recomp_$(n).c) $(BUILD)/gen/recomp_table.c
-RT  := $(wildcard runtime/*.c) $(PSYZ)/src/psyz/libgte.c $(PSYZ)/src/psyz/psyz_spu.c host/main.c
+RT  := $(wildcard runtime/*.c) $(PSYZ)/src/psyz/libgte.c $(PSYZ)/src/psyz/psyz_spu.c $(PSYZ)/src/psyz/psyz_mcd.c host/main.c
 OBJ := $(patsubst %.c,$(BUILD)/obj/%.o,$(notdir $(GEN) $(RT)))
 
 all: $(BUILD)/tpm-host

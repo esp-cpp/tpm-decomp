@@ -1,6 +1,6 @@
 /* Native stand-ins for library code whose hardware is not emulated:
  * libpad's direct-mode controller polling (SIO0), the BIOS patches that
- * search kernel code, and libmcrd (no memory card yet). Listed in
+ * search kernel code, and libmcrd (the memory card is an image file). Listed in
  * recomp/hle.us.txt; the recompiler makes each listed function call its
  * hle_ counterpart. */
 #include "recomp_rt.h"
@@ -70,33 +70,183 @@ void hle__patch_card(void) {}
 void hle__patch_card2(void) {}
 void hle__copy_memcard_patch(void) {}
 
-/* ---- libmcrd: no card in either slot ---- */
-enum { McErrNone, McErrCardNotExist, McErrCardInvalid, McErrNewCard };
-static uint32_t mc_cmd, mc_result, mc_pending;
+/* ---- libmcrd: the memory card in an image file (psyz/mcd.h) ----
+ * The library's functions all go to the card file directly; the
+ * asynchronous ones finish at once and MemCardSync reports them. The game
+ * (0x8001F324) polls MemCardSync and uses no callback. Arguments past the
+ * fourth are on the guest stack (sp + 0x10, 0x14). */
+#include <psyz/mcd.h>
 
-static void mc_async(uint32_t cmd) {
+enum {
+    McErrNone, McErrCardNotExist, McErrCardInvalid, McErrNewCard, McErrNotFormat,
+    McErrFileNotExist, McErrAlreadyExist, McErrBlockFull,
+};
+enum { McFuncExist = 1, McFuncAccept, McFuncReadFile, McFuncWriteFile, McFuncReadData, McFuncWriteData };
+static uint32_t mc_cmd, mc_result, mc_pending;
+static uint32_t mc_new[2];            /* MemCardExist reports a new card until MemCardAccept */
+static char mc_open_name[MCD_NAME + 1]; /* MemCardOpen's file (the port in mc_open_port) */
+static int mc_open_port = -1;
+
+#define A3 g_cpu.r[7]
+static uint32_t mc_stack_arg(int i) { return LW(g_cpu.r[29] + 0x10 + 4 * (uint32_t)i); }
+static const char* mc_path(uint32_t chan) {
+    if ((chan & 0xF) != 0) return NULL; /* no multitap */
+    return plat_memcard_path((int)(chan >> 4) & 1);
+}
+static void mc_guest_name(uint32_t a, char out[MCD_NAME + 1]) {
+    int n = 0;
+    for (; n < MCD_NAME && LBU(a + (uint32_t)n); n++) out[n] = (char)LBU(a + (uint32_t)n);
+    out[n] = 0;
+}
+/* the card's state as libmcrd reports it */
+static uint32_t mc_card(const char* path) {
+    if (!path) return McErrCardNotExist;
+    switch (Mcd_Check(path, 1)) {
+    case MCD_OK: return McErrNone;
+    case MCD_ERR_UNFORMATTED: return McErrNotFormat;
+    default: return McErrCardInvalid;
+    }
+}
+static uint32_t mc_err(int r) {
+    switch (r) {
+    case MCD_OK: return McErrNone;
+    case MCD_ERR_UNFORMATTED: return McErrNotFormat;
+    case MCD_ERR_NOFILE: return McErrFileNotExist;
+    case MCD_ERR_EXISTS: return McErrAlreadyExist;
+    case MCD_ERR_FULL: return McErrBlockFull;
+    default: return McErrCardInvalid;
+    }
+}
+static void mc_done(uint32_t cmd, uint32_t result) {
     mc_cmd = cmd;
-    mc_result = McErrCardNotExist;
+    mc_result = result;
     mc_pending = 1;
     V0 = 1;
 }
-void hle_MemCardInit(void) {}
+/* guest RAM <-> the card, in whole 128-byte frames as the library requires */
+static uint32_t mc_data(uint32_t chan, const char* name, uint32_t adrs, uint32_t ofs, uint32_t bytes, int write) {
+    const char* path = mc_path(chan);
+    uint32_t r = mc_card(path);
+    if (r != McErrNone) return r;
+    const int32_t at = ram_off(adrs);
+    if (at < 0 || (uint32_t)at + bytes > RAM_SIZE) return McErrCardInvalid;
+    r = mc_err(write ? Mcd_Write(path, name, ofs, g_ram + at, bytes) : Mcd_Read(path, name, ofs, g_ram + at, bytes));
+    RT_LOG("memory card: %s %s +%u, %u bytes: %u", write ? "write" : "read", name, (unsigned)ofs, (unsigned)bytes,
+           (unsigned)r);
+    return r;
+}
+
+void hle_MemCardInit(void) { mc_new[0] = mc_new[1] = 1; }
 void hle_MemCardEnd(void) {}
 void hle_MemCardStart(void) {}
-void hle_MemCardStop(void) {}
-void hle_MemCardExist(void) { mc_async(1); }
-void hle_MemCardAccept(void) { mc_async(2); }
-void hle_MemCardReadFile(void) { mc_async(3); }
-void hle_MemCardWriteFile(void) { mc_async(4); }
-void hle_MemCardReadData(void) { mc_async(5); }
-void hle_MemCardWriteData(void) { mc_async(6); }
-void hle_MemCardOpen(void) { V0 = McErrCardNotExist; }
-void hle_MemCardClose(void) {}
-void hle_MemCardGetDirentry(void) { V0 = McErrCardNotExist; }
-void hle_MemCardCreateFile(void) { V0 = McErrCardNotExist; }
-void hle_MemCardDeleteFile(void) { V0 = McErrCardNotExist; }
-void hle_MemCardFormat(void) { V0 = McErrCardNotExist; }
-void hle_MemCardUnformat(void) { V0 = McErrCardNotExist; }
+void hle_MemCardStop(void) { mc_open_port = -1; }
+void hle_MemCardExist(void) {
+    const uint32_t chan = A0, port = (chan >> 4) & 1;
+    uint32_t r = mc_path(chan) ? McErrNone : McErrCardNotExist;
+    if (r == McErrNone && mc_new[port]) r = McErrNewCard;
+    mc_done(McFuncExist, r);
+}
+void hle_MemCardAccept(void) {
+    const uint32_t chan = A0, port = (chan >> 4) & 1;
+    uint32_t r = mc_card(mc_path(chan));
+    if (r == McErrNone && mc_new[port]) r = McErrNewCard;
+    if (r == McErrNone || r == McErrNewCard || r == McErrNotFormat) mc_new[port] = 0;
+    RT_LOG("memory card: accept port %u: %u", (unsigned)port, (unsigned)r);
+    mc_done(McFuncAccept, r);
+}
+void hle_MemCardOpen(void) {
+    /* MemCardOpen(chan, file, flag) */
+    const char* path = mc_path(A0);
+    char name[MCD_NAME + 1];
+    mc_guest_name(A1, name);
+    uint32_t r = mc_card(path);
+    if (r == McErrNone) r = mc_err(Mcd_Find(path, name, NULL));
+    if (r == McErrNone) {
+        memcpy(mc_open_name, name, sizeof name);
+        mc_open_port = (int)A0;
+    }
+    V0 = r;
+}
+void hle_MemCardClose(void) { mc_open_port = -1; }
+void hle_MemCardReadData(void) {
+    /* MemCardReadData(adrs, ofs, bytes) */
+    if ((A2 & 0x7F) || mc_open_port < 0) { V0 = 0; return; }
+    mc_done(McFuncReadData, mc_data((uint32_t)mc_open_port, mc_open_name, A0, A1, A2, 0));
+}
+void hle_MemCardWriteData(void) {
+    if ((A2 & 0x7F) || mc_open_port < 0) { V0 = 0; return; }
+    mc_done(McFuncWriteData, mc_data((uint32_t)mc_open_port, mc_open_name, A0, A1, A2, 1));
+}
+void hle_MemCardReadFile(void) {
+    /* MemCardReadFile(chan, file, adrs, ofs, bytes) */
+    const uint32_t bytes = mc_stack_arg(0);
+    if (bytes & 0x7F) { V0 = 0; return; }
+    char name[MCD_NAME + 1];
+    mc_guest_name(A1, name);
+    mc_done(McFuncReadFile, mc_data(A0, name, A2, A3, bytes, 0));
+}
+void hle_MemCardWriteFile(void) {
+    const uint32_t bytes = mc_stack_arg(0);
+    if (bytes & 0x7F) { V0 = 0; return; }
+    char name[MCD_NAME + 1];
+    mc_guest_name(A1, name);
+    mc_done(McFuncWriteFile, mc_data(A0, name, A2, A3, bytes, 1));
+}
+void hle_MemCardGetDirentry(void) {
+    /* MemCardGetDirentry(chan, name, struct DIRENTRY* dir, long* files, ofs, max):
+     * DIRENTRY is name[20], attr, size, next, system[8] (40 bytes) */
+    const char* path = mc_path(A0);
+    char pat[MCD_NAME + 1];
+    mc_guest_name(A1, pat);
+    const uint32_t dir = A2, files = A3, ofs = mc_stack_arg(0), max = mc_stack_arg(1);
+    uint32_t r = mc_card(path), n = 0;
+    if (r == McErrNone) {
+        McdEntry e[MCD_FILES];
+        const int count = Mcd_List(path, e);
+        if (count < 0) r = mc_err(count);
+        for (int i = 0, seen = 0; i < count && n < max; i++) {
+            if (!Mcd_NameMatch(pat, e[i].name)) continue;
+            if ((uint32_t)seen++ < ofs) continue;
+            const uint32_t d = dir + 40 * n++;
+            for (uint32_t k = 0; k < 40; k++) SB(d + k, 0);
+            for (uint32_t k = 0; k < MCD_NAME && e[i].name[k]; k++) SB(d + k, (uint8_t)e[i].name[k]);
+            SW(d + 20, 0x51); /* attr: the directory state */
+            SW(d + 24, e[i].size);
+            SW(d + 32, (uint32_t)e[i].first);
+        }
+    }
+    if (files) SW(files, n);
+    RT_LOG("memory card: directory '%s': %u files (%u)", pat, (unsigned)n, (unsigned)r);
+    V0 = r;
+}
+void hle_MemCardCreateFile(void) {
+    /* MemCardCreateFile(chan, file, blocks) */
+    const char* path = mc_path(A0);
+    char name[MCD_NAME + 1];
+    mc_guest_name(A1, name);
+    uint32_t r = mc_card(path);
+    if (r == McErrNone) r = mc_err(Mcd_Create(path, name, (int)A2));
+    RT_LOG("memory card: create %s (%u blocks): %u", name, (unsigned)A2, (unsigned)r);
+    V0 = r;
+}
+void hle_MemCardDeleteFile(void) {
+    const char* path = mc_path(A0);
+    char name[MCD_NAME + 1];
+    mc_guest_name(A1, name);
+    uint32_t r = mc_card(path);
+    if (r == McErrNone) r = mc_err(Mcd_Delete(path, name));
+    RT_LOG("memory card: delete %s: %u", name, (unsigned)r);
+    V0 = r;
+}
+void hle_MemCardFormat(void) {
+    const char* path = mc_path(A0);
+    V0 = path ? mc_err(Mcd_Format(path)) : McErrCardNotExist;
+    RT_LOG("memory card: format: %u", (unsigned)V0);
+}
+void hle_MemCardUnformat(void) {
+    const char* path = mc_path(A0);
+    V0 = path && Mcd_Unformat(path) == MCD_OK ? 1 : 0;
+}
 void hle_MemCardCallback(void) { V0 = 0; }
 void hle_MemCardSync(void) {
     /* MemCardSync(mode, long* cmds, long* result) */

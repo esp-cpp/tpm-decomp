@@ -43,7 +43,7 @@ player overlay, your disc image).
   `0x80160000`) is pulled out of `FILE.000` through the game's own file table
   and recompiled too.
 - **HLE**: `hle.us.txt` lists functions replaced by native code
-  (`runtime/rt_hle.c`): the BIOS patches, libmcrd (no memory card yet), the
+  (`runtime/rt_hle.c`): the BIOS patches, libmcrd (on a card image file, psyz's `mcd`), the
   movie player's play function (`runtime/rt_movie.c`: the movies natively,
   see below), and a wrapper on `PadInitDirect`.
 - **Movies**: the overlay streams STR files through libcd's ring, which
@@ -103,8 +103,11 @@ done; real-time mode only throttles), so the same `--press` script gives the
 same frames on every machine: `--gpu-trace N` on the desktop and the board's
 GPU trace can be diffed line by line.
 
-Not yet: memory cards, root-counter interrupts. (XA audio outside the
+Not yet: root-counter interrupts. (XA audio outside the
 movies: TPM streams none.)
 
 Runner options: `--realtime` (pace to the wall clock), `--async-gpu` (the
-GPU's command stream on a second thread, as on the board), `--gpu-trace N`.
+GPU's command stream on a second thread, as on the board), `--gpu-trace N`,
+`--memcard FILE` (a memory card: a raw 128 KB image as PC emulators use,
+made if missing; without it the ports are empty). The menus read the pad
+slowly: `RT_PRESS_HOLD=20` holds each press for 20 vblanks instead of 10.

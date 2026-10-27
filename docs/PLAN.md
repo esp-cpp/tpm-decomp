@@ -86,5 +86,5 @@ Next for the recompiled game:
 - [x] MDEC (movies) and XA-ADPCM (the movies' audio; in-game speech and
       music come through ordinary reads): the movies play natively
       (`recomp/runtime/rt_movie.c`)
-- [ ] memory card (save files on the SD card)
+- [x] memory card (save files on the SD card): libmcrd natively on a 128 KB card image (psyz mcd)
 - [ ] root-counter interrupts, if anything uses them
